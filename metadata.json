@@ -1,0 +1,6 @@
+{
+  "name": "Algerian Darija Audio Transcriber and Subtitle Builder",
+  "description": "An AI-powered web app to transcribe Algerian Darija audio (mixed with French and English) and build styled video subtitles with word-limit controls and translation options.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
