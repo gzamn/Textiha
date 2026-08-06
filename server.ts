@@ -79,12 +79,13 @@ CRITICAL REQUIREMENTS:
    - If the words spoken are English or French, they MUST be transcribed in standard LATIN script (e.g., "l'équipe", "absolute beautiful day", "c'est incroyable").
    - If the words spoken are Algerian Darija, they MUST be transcribed in standard ARABIC script (e.g., "اليوم راني", "سلام الخاوة").
    - This results in a beautiful hybrid script representing code-switching exactly as it is spoken (e.g. "سلام l'équipe! اليوم راني في la Casbah d'Alger, absolute beautiful day!").
-3. TEMPORAL ACCURACY & SYNCHRONIZATION:
-   - Ensure start and end timestamps (in seconds) are extremely precise and match the exact moment the words are spoken in the audio.
+3. TEMPORAL ACCURACY & WORD TIMING PRECISION:
+   - Listen to the audio with extreme sub-second precision. Align timestamps directly to speech phoneme onset (start) and offset (end).
    - Do NOT start the first subtitle segment at 0.0 unless the voice literally begins at 0.0 seconds. 
-   - Accurately detect any silent or music intro in the audio. If speech starts at e.g., 2.5 seconds, the first segment MUST have a start timestamp of exactly 2.5.
-   - Split the audio into natural, short subtitle segments of 2 to 6 seconds each.
-   - Timestamps must not overlap.
+   - Accurately detect any silent or music intro in the audio. If speech starts at e.g., 2.35 seconds, the first segment MUST have a start timestamp of exactly 2.35.
+   - Split speech into concise, short subtitle segments of 1.5 to 3.5 seconds each (approx 2 to 5 words). Short phrases provide far higher word timing accuracy and sync smoothly with fast speech.
+   - Strip out silent pauses between phrases — do NOT extend segment duration over long silences.
+   - Ensure consecutive segment timestamps are strictly sequential and do not overlap.
 
 Format the response STRICTLY as a JSON array of subtitle segments based on the requested schema.`;
 

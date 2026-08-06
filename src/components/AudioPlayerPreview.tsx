@@ -384,38 +384,60 @@ export default function AudioPlayerPreview({
             height: "50px", // fixed buffer to avoid bouncing
           }}
         >
-          {activeSegment ? (
-            <div
-              id="active-subtitle-card"
-              className="transition-all duration-150 transform scale-100 ease-out flex flex-col items-center text-center shadow-2xl animate-fade-in"
-              dir={style.direction || "rtl"}
-              style={{
-                fontFamily: style.fontFamily,
-                fontSize: `${style.fontSize}px`,
-                color: style.textColor,
-                backgroundColor: style.backgroundColor
-                  ? `${style.backgroundColor}${Math.round(style.backgroundOpacity * 255)
-                      .toString(16)
-                      .padStart(2, "0")}`
-                  : "transparent",
-                borderRadius: `${style.borderRadius}px`,
-                padding: `${style.paddingY}px ${style.paddingX}px`,
-                textTransform: style.textTransform,
-                textShadow:
-                  style.outlineWidth > 0
-                    ? `0 0 0.5px ${style.outlineColor}, ${style.outlineColor} 0px 0px ${style.outlineWidth}px`
-                    : "none",
-                maxWidth: "90%",
-                lineHeight: "1.4",
-                direction: style.direction || "rtl",
-              }}
-            >
-              {/* Original Darija text line */}
-              <div id="subtitle-orig-text" className="font-semibold tracking-wide" dir={style.direction || "rtl"}>
-                {activeSegment.text}
+          {activeSegment ? (() => {
+            const words = activeSegment.text.trim().split(/\s+/).filter(Boolean);
+            const segDuration = activeSegment.end - activeSegment.start;
+            const elapsed = Math.max(0, currentTime - activeSegment.start);
+            const progress = segDuration > 0 ? Math.min(1, elapsed / segDuration) : 0;
+            const activeWordIdx = Math.min(words.length - 1, Math.floor(progress * words.length));
+
+            return (
+              <div
+                id="active-subtitle-card"
+                className="transition-all duration-150 transform scale-100 ease-out flex flex-col items-center text-center shadow-2xl animate-fade-in"
+                dir={style.direction || "rtl"}
+                style={{
+                  fontFamily: style.fontFamily,
+                  fontSize: `${style.fontSize}px`,
+                  color: style.textColor,
+                  backgroundColor: style.backgroundColor
+                    ? `${style.backgroundColor}${Math.round(style.backgroundOpacity * 255)
+                        .toString(16)
+                        .padStart(2, "0")}`
+                    : "transparent",
+                  borderRadius: `${style.borderRadius}px`,
+                  padding: `${style.paddingY}px ${style.paddingX}px`,
+                  textTransform: style.textTransform,
+                  textShadow:
+                    style.outlineWidth > 0
+                      ? `0 0 0.5px ${style.outlineColor}, ${style.outlineColor} 0px 0px ${style.outlineWidth}px`
+                      : "none",
+                  maxWidth: "90%",
+                  lineHeight: "1.4",
+                  direction: style.direction || "rtl",
+                }}
+              >
+                {/* Original Darija text line with active word timing highlight */}
+                <div id="subtitle-orig-text" className="font-semibold tracking-wide flex flex-wrap justify-center gap-1.5" dir={style.direction || "rtl"}>
+                  {words.map((word, wIdx) => {
+                    const isWordActive = wIdx === activeWordIdx;
+                    return (
+                      <span
+                        key={wIdx}
+                        className={`transition-all duration-100 ${
+                          isWordActive
+                            ? "text-yellow-300 font-extrabold scale-105 underline decoration-purple-400 decoration-2 underline-offset-4"
+                            : ""
+                        }`}
+                      >
+                        {word}
+                      </span>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ) : (
+            );
+          })() : (
             <span className="text-white/20 font-mono text-xs italic tracking-wider animate-pulse">
               [ Waiting for speech ]
             </span>
