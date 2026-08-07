@@ -8,7 +8,6 @@ import path from "path";
 import multer from "multer";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
-import { createServer as createViteServer } from "vite";
 
 dotenv.config();
 
@@ -156,6 +155,14 @@ ${languagePrompt ? `Additional custom guidelines from user: ${languagePrompt}` :
   }
 });
 
+// Global Express Error Handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error("Unhandled Express Error:", err);
+  res.status(err.status || 500).json({
+    error: err.message || "A server error occurred while processing the request.",
+  });
+});
+
 // Export app for Vercel serverless integration
 export default app;
 
@@ -163,6 +170,7 @@ export default app;
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     console.log("Starting server in DEVELOPMENT mode with Vite Middleware...");
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
