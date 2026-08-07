@@ -199,6 +199,17 @@ export default function App() {
         body: formData,
       });
 
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const rawText = await response.text();
+        if (rawText.includes("<!DOCTYPE") || rawText.includes("<html") || rawText.includes("The page")) {
+          throw new Error(
+            `Server endpoint /api/transcribe returned an HTML response (HTTP ${response.status}). If deployed on Vercel, make sure GEMINI_API_KEY is added in Vercel Environment Variables and the API deployment finishes.`
+          );
+        }
+        throw new Error(`Server returned unexpected non-JSON response (HTTP ${response.status}): ${rawText.slice(0, 150)}`);
+      }
+
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || "Server failed to transcribe audio. Check server console logs.");

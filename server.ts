@@ -156,7 +156,10 @@ ${languagePrompt ? `Additional custom guidelines from user: ${languagePrompt}` :
   }
 });
 
-// Setup Vite Dev Server / Static Hosting
+// Export app for Vercel serverless integration
+export default app;
+
+// Setup Vite Dev Server / Static Hosting for standalone / Cloud Run container execution
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     console.log("Starting server in DEVELOPMENT mode with Vite Middleware...");
@@ -179,4 +182,7 @@ async function startServer() {
   });
 }
 
-startServer();
+// Only listen directly if not running as a Vercel serverless function
+if (!process.env.VERCEL) {
+  startServer();
+}

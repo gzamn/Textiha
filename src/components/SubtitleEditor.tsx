@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect } from "react";
+import React from "react";
 import { SubtitleSegment } from "../types";
 import { Plus, Trash2, Clock, AlignLeft, Sparkles, MessageSquareDot, Scissors, Target } from "lucide-react";
 
@@ -130,23 +130,9 @@ export default function SubtitleEditor({
     return sec.toFixed(2);
   };
 
-  // Auto-scroll active subtitle segment card into the center of the view when audio reaches its timestamp
   const activeSegmentId = segments.find(
     (seg) => currentTime >= seg.start && currentTime <= seg.end
   )?.id;
-
-  useEffect(() => {
-    if (activeSegmentId) {
-      const el = document.getElementById(`segment-card-${activeSegmentId}`);
-      if (el) {
-        el.scrollIntoView({
-          behavior: "smooth",
-          block: "center",
-          inline: "nearest",
-        });
-      }
-    }
-  }, [activeSegmentId]);
 
   return (
     <div id="subtitle-editor-panel" className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4 h-full flex flex-col">
