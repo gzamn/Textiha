@@ -4,12 +4,22 @@
  */
 
 import React, { useState, useEffect, useRef } from "react";
+import { User } from "firebase/auth";
 import { SubtitleSegment, SubtitleStyle, DEFAULT_STYLE } from "./types";
 import { SAMPLE_PROJECTS, reformatSegmentsByWordLimit } from "./utils";
 import AudioPlayerPreview from "./components/AudioPlayerPreview";
 import SubtitleStylePanel from "./components/SubtitleStylePanel";
 import SubtitleExporter from "./components/SubtitleExporter";
 import SubtitleEditor from "./components/SubtitleEditor";
+import { UserAuthBar } from "./components/UserAuthBar";
+import { ApiKeyModal } from "./components/ApiKeyModal";
+import {
+  auth,
+  fetchUserProfile,
+  saveUserGeminiApiKey,
+  saveTranscriptionToHistory,
+  fetchUserTranscriptionHistory,
+} from "./firebase";
 import {
   UploadCloud,
   FileAudio,
@@ -19,13 +29,14 @@ import {
   Flame,
   BookOpen,
   CheckCircle2,
+  Key,
 } from "lucide-react";
 
 const STATUS_MESSAGES = [
-  "Uploading your MP3 audio file to backend...",
-  "Initializing Gemini 3.5 AI transcription module...",
+  "Uploading your MP3 audio file to processing pipeline...",
+  "Running Gemini 2.5 Flash on your personal quota...",
   "Analyzing mixed vocal patterns of Algerian Darija...",
-  "Decrypting colloquial Franco-Arabic phrases...",
+  "Decoding colloquial Franco-Arabic phrases...",
   "Aligning hybrid French and English colloquialisms...",
   "Calculating millisecond-level timeline offsets...",
   "Generating final subtitle cue timestamps...",
@@ -33,6 +44,14 @@ const STATUS_MESSAGES = [
 ];
 
 export default function App() {
+  // Auth & API Key States
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
+    return localStorage.getItem("user_gemini_api_key") || "";
+  });
+  const [isKeyModalOpen, setIsKeyModalOpen] = useState<boolean>(false);
+  const [savedHistory, setSavedHistory] = useState<any[]>([]);
+
   // Subtitle Content & Timeline States
   const [originalSegments, setOriginalSegments] = useState<SubtitleSegment[]>([]);
   const [maxWordsPerLine, setMaxWordsPerLine] = useState<number>(50); // 50 means uncapped
@@ -58,6 +77,51 @@ export default function App() {
 
   // Get active project duration (either current audio file duration or active mock sample duration)
   const [audioDuration, setAudioDuration] = useState<number>(0);
+
+  // Listen to Firebase Auth state
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      setCurrentUser(user);
+      if (user) {
+        // Load user profile & saved key from Firestore
+        const profile = await fetchUserProfile(user.uid);
+        if (profile?.geminiApiKey) {
+          setGeminiApiKey(profile.geminiApiKey);
+          localStorage.setItem("user_gemini_api_key", profile.geminiApiKey);
+        }
+        // Load transcription history
+        const history = await fetchUserTranscriptionHistory(user.uid);
+        setSavedHistory(history);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Save Gemini Key
+  const handleSaveGeminiKey = async (newKey: string) => {
+    setGeminiApiKey(newKey);
+    localStorage.setItem("user_gemini_api_key", newKey);
+    if (currentUser) {
+      await saveUserGeminiApiKey(currentUser.uid, newKey);
+    }
+  };
+
+  // Load a saved project from history
+  const handleLoadSavedProject = (project: any) => {
+    if (project.segments) {
+      setOriginalSegments(project.segments);
+      setProjectName(project.audioName || "Loaded Project");
+      if (project.audioDuration) {
+        setAudioDuration(project.audioDuration);
+      }
+      if (project.guidelines) {
+        setCustomPrompt(project.guidelines);
+      }
+      setCurrentTime(0);
+      setIsPlaying(false);
+      setError(null);
+    }
+  };
 
   // If a mock sample is active, calculate its duration based on last segment end
   useEffect(() => {
@@ -163,26 +227,17 @@ export default function App() {
     setCurrentTime(0);
   };
 
-  // Load a Prebuilt Sample Project
-  const loadSampleProject = (sampleId: string) => {
-    const sample = SAMPLE_PROJECTS.find((s) => s.id === sampleId);
-    if (!sample) return;
-
-    setError(null);
-    setAudioFile(null);
-    setAudioUrl(null);
-    setOriginalSegments(sample.segments);
-    setProjectName(sample.title);
-    setAudioDuration(sample.duration);
-    setCurrentTime(0);
-    setIsPlaying(false);
-  };
-
   // Trigger server-side transcription using Gemini API
   const handleTranscribeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!audioFile) {
       setError("Please upload an MP3 audio file first before transcribing.");
+      return;
+    }
+
+    if (!geminiApiKey.trim()) {
+      setIsKeyModalOpen(true);
+      setError("Please enter and verify your free Gemini API key to proceed with transcription.");
       return;
     }
 
@@ -192,10 +247,14 @@ export default function App() {
     const formData = new FormData();
     formData.append("audio", audioFile);
     formData.append("prompt", customPrompt);
+    formData.append("geminiApiKey", geminiApiKey.trim());
 
     try {
       const response = await fetch("/api/transcribe", {
         method: "POST",
+        headers: {
+          "x-gemini-api-key": geminiApiKey.trim(),
+        },
         body: formData,
       });
 
@@ -204,7 +263,7 @@ export default function App() {
         const rawText = await response.text();
         if (rawText.includes("<!DOCTYPE") || rawText.includes("<html") || rawText.includes("The page")) {
           throw new Error(
-            `Server endpoint /api/transcribe returned an HTML response (HTTP ${response.status}). If deployed on Vercel, make sure GEMINI_API_KEY is added in Vercel Environment Variables and the API deployment finishes.`
+            `Server endpoint /api/transcribe returned an HTML response (HTTP ${response.status}). If deployed on Vercel, check that the API deployment is active.`
           );
         }
         throw new Error(`Server returned unexpected non-JSON response (HTTP ${response.status}): ${rawText.slice(0, 150)}`);
@@ -212,7 +271,7 @@ export default function App() {
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || "Server failed to transcribe audio. Check server console logs.");
+        throw new Error(data.error || "Failed to transcribe audio. Please check your Gemini API key.");
       }
 
       if (data.segments && Array.isArray(data.segments)) {
@@ -228,6 +287,22 @@ export default function App() {
         setOriginalSegments(parsedSegments);
         setCurrentTime(0);
         setIsPlaying(false);
+
+        // Auto save to Firestore if user is logged in
+        if (currentUser) {
+          try {
+            await saveTranscriptionToHistory(currentUser.uid, {
+              audioName: projectName,
+              audioDuration: audioDuration,
+              segments: parsedSegments,
+              guidelines: customPrompt,
+            });
+            const updated = await fetchUserTranscriptionHistory(currentUser.uid);
+            setSavedHistory(updated);
+          } catch (histErr) {
+            console.warn("Could not save to history:", histErr);
+          }
+        }
       } else {
         throw new Error("Invalid response schema received from transcription engine.");
       }
@@ -245,14 +320,14 @@ export default function App() {
   return (
     <div id="app-root" className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* 1. Header Banner */}
-      <header id="app-header" className="border-b border-slate-900 bg-slate-900/60 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <header id="app-header" className="border-b border-slate-900 bg-slate-900/80 backdrop-blur-md sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center space-x-3">
-            <div className="bg-purple-600 p-2 rounded-xl text-white shadow-md shadow-purple-500/10">
-              <Flame className="w-6 h-6 animate-pulse" id="branding-logo" />
+            <div className="bg-purple-600 p-2 rounded-xl text-white shadow-md shadow-purple-500/10 shrink-0">
+              <Flame className="w-5 h-5 sm:w-6 sm:h-6 animate-pulse" id="branding-logo" />
             </div>
             <div>
-              <h1 className="text-base sm:text-lg font-extrabold text-slate-100 tracking-tight font-sans">
+              <h1 className="text-sm sm:text-base md:text-lg font-extrabold text-slate-100 tracking-tight font-sans">
                 Algerian Darija Transcriber
               </h1>
               <p className="text-[10px] sm:text-xs text-slate-400 font-medium">
@@ -261,29 +336,64 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center space-x-3">
-            <span className="hidden sm:inline-flex items-center gap-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-3 py-1 rounded-full text-xs font-mono font-bold">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Gemini 3.5 Active</span>
-            </span>
-            <span className="text-xs text-slate-500 bg-slate-950 border border-slate-800 px-3 py-1 rounded-full font-mono">
-              v1.2.0
-            </span>
-          </div>
+          {/* User Auth and Gemini API Key Management */}
+          <UserAuthBar
+            user={currentUser}
+            geminiApiKey={geminiApiKey}
+            onOpenKeyModal={() => setIsKeyModalOpen(true)}
+            savedHistory={savedHistory}
+            onLoadProject={handleLoadSavedProject}
+          />
         </div>
       </header>
+
+      {/* API Key Modal */}
+      <ApiKeyModal
+        isOpen={isKeyModalOpen}
+        onClose={() => setIsKeyModalOpen(false)}
+        currentKey={geminiApiKey}
+        onSaveKey={handleSaveGeminiKey}
+        userEmail={currentUser?.email || undefined}
+      />
 
       {/* 2. Main Content Dashboard Container */}
       <main id="app-dashboard" className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Error notification banner if any */}
         {error && (
-          <div id="error-banner" className="lg:col-span-12 bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 flex items-start gap-3 text-rose-400 text-sm">
-            <AlertTriangle className="w-5 h-5 shrink-0" />
-            <div className="space-y-1">
-              <p className="font-bold">Execution Error</p>
-              <p className="text-xs opacity-90">{error}</p>
+          <div id="error-banner" className="lg:col-span-12 bg-rose-950/40 border border-rose-800/60 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-rose-300 text-sm animate-in fade-in duration-200">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-rose-400 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-bold text-rose-200">Execution Error</p>
+                <p className="text-xs opacity-90">{error}</p>
+              </div>
             </div>
+            <button
+              onClick={() => setIsKeyModalOpen(true)}
+              className="shrink-0 px-3 py-1.5 bg-rose-900/60 hover:bg-rose-800/80 border border-rose-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
+            >
+              <Key className="w-3.5 h-3.5" />
+              <span>Configure Gemini Key</span>
+            </button>
+          </div>
+        )}
+
+        {/* API Key missing tip bar (if key not configured) */}
+        {!geminiApiKey && !error && (
+          <div className="lg:col-span-12 bg-amber-950/30 border border-amber-800/60 rounded-xl p-3 sm:p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-amber-200 text-xs">
+            <div className="flex items-center gap-2.5">
+              <Key className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                <strong>Bring Your Own Gemini API Key:</strong> Connect your personal free Gemini key from Google AI Studio to process unlimited transcriptions with your own dedicated quota.
+              </span>
+            </div>
+            <button
+              onClick={() => setIsKeyModalOpen(true)}
+              className="shrink-0 px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+            >
+              <span>Add Gemini Key</span>
+            </button>
           </div>
         )}
 
@@ -332,7 +442,7 @@ export default function App() {
               ) : (
                 <div className="space-y-1">
                   <p className="text-xs font-semibold text-slate-300">
-                    Drag & Drop your audio file hna
+                    Drag & Drop your audio file here
                   </p>
                   <p className="text-[10px] text-slate-500 font-medium">
                     Supports .MP3 and .WAV files up to 35MB
@@ -379,8 +489,6 @@ export default function App() {
               </button>
             </form>
           </div>
-
-
         </div>
 
         {/* ========================================================
@@ -395,12 +503,12 @@ export default function App() {
                 <Sparkles className="w-6 h-6 text-purple-400 absolute inset-0 m-auto animate-pulse" />
               </div>
               <div className="space-y-2 max-w-md">
-                <h3 className="text-lg font-bold text-slate-200">Processing Audio with AI</h3>
+                <h3 className="text-lg font-bold text-slate-200">Processing Audio with Gemini</h3>
                 <p className="text-xs text-purple-400 font-mono tracking-wider animate-pulse uppercase">
                   {transcribingStatus}
                 </p>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Our custom multi-lingual transcription engine reads complex colloquial vocal structures. This may take up to a minute depending on audio size.
+                  Executing with your personal Gemini quota. High-fidelity Darija Franco-Arabic detection in progress.
                 </p>
               </div>
             </div>
@@ -460,3 +568,4 @@ export default function App() {
     </div>
   );
 }
+

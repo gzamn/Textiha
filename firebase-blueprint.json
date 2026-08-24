@@ -1,0 +1,45 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account profile and preferences including Gemini API key.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique user ID" },
+        "email": { "type": "string", "description": "User email address" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "photoURL": { "type": "string", "description": "User avatar URL" },
+        "geminiApiKey": { "type": "string", "description": "User's personal Gemini API key for transcription quotas" },
+        "createdAt": { "type": "string", "description": "Timestamp when profile was created" },
+        "updatedAt": { "type": "string", "description": "Timestamp when profile was last updated" }
+      },
+      "required": ["uid", "email"]
+    },
+    "TranscriptionProject": {
+      "title": "TranscriptionProject",
+      "description": "Saved audio transcription and subtitle history.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Project ID" },
+        "userId": { "type": "string", "description": "Owner user ID" },
+        "audioName": { "type": "string", "description": "File name of the audio" },
+        "audioDuration": { "type": "number", "description": "Duration in seconds" },
+        "segments": { "type": "array", "description": "List of timed subtitle segments" },
+        "guidelines": { "type": "string", "description": "Custom prompt guidelines used" },
+        "createdAt": { "type": "string", "description": "Timestamp created" },
+        "updatedAt": { "type": "string", "description": "Timestamp updated" }
+      },
+      "required": ["id", "userId", "audioName", "segments"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile document accessible only by the owner user."
+    },
+    "/users/{userId}/transcriptions/{transcriptionId}": {
+      "schema": "TranscriptionProject",
+      "description": "User's saved transcription projects."
+    }
+  }
+}

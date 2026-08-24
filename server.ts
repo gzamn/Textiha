@@ -22,39 +22,80 @@ const upload = multer({
   },
 });
 
-// Initialize Gemini Client
-// We use lazy initialization to handle missing keys gracefully on startup
-let aiClient: GoogleGenAI | null = null;
-
-function getAiClient(): GoogleGenAI {
-  if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error("GEMINI_API_KEY environment variable is not defined. Please set it in Settings > Secrets.");
-    }
-    aiClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
+// Helper to get GoogleGenAI instance using user-provided key or server fallback
+function getAiClient(userKey?: string): GoogleGenAI {
+  const apiKey = (userKey && userKey.trim()) || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "No Gemini API key provided. Please sign in and enter your personal Gemini API key (or set GEMINI_API_KEY in environment variables)."
+    );
   }
-  return aiClient;
+  return new GoogleGenAI({
+    apiKey: apiKey.trim(),
+    httpOptions: {
+      headers: {
+        "User-Agent": "aistudio-build",
+      },
+    },
+  });
 }
 
 // Enable JSON body parsing for settings, etc.
 app.use(express.json({ limit: "10mb" }));
 
-// 1. Health check endpoint
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", message: "Algerian Darija Subtitle Builder Server is running." });
+// 1. Health check endpoint (matches both /api/health and /health)
+app.get(["/api/health", "/health"], (req, res) => {
+  const hasServerKey = Boolean(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY);
+  res.json({
+    status: "ok",
+    message: "Algerian Darija Subtitle Builder Server is running.",
+    serverKeyConfigured: hasServerKey,
+  });
 });
 
-// 2. Transcription and Translation endpoint
-app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
+// 2. Validate user API key endpoint
+app.post(["/api/validate-key", "/validate-key"], async (req, res) => {
   try {
+    const rawKey = req.body?.apiKey || (req.headers["x-gemini-api-key"] as string);
+    if (!rawKey || !rawKey.trim()) {
+      return res.status(400).json({ valid: false, error: "API key is required" });
+    }
+    const ai = getAiClient(rawKey.trim());
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ text: "ping" }],
+    });
+    if (response && response.text) {
+      return res.json({ valid: true, message: "Gemini API key is valid and active." });
+    }
+    return res.json({ valid: true, message: "Gemini API key validated." });
+  } catch (err: any) {
+    console.error("API Key validation error:", err);
+    return res.status(400).json({
+      valid: false,
+      error: err.message || "Invalid Gemini API key or quota exceeded.",
+    });
+  }
+});
+
+// 3. Transcription endpoint (matches both /api/transcribe and /transcribe)
+app.post(["/api/transcribe", "/transcribe"], upload.single("audio"), async (req, res) => {
+  try {
+    const userApiKey =
+      (req.headers["x-gemini-api-key"] as string) ||
+      req.body?.geminiApiKey ||
+      (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.substring(7) : undefined);
+
+    const serverKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+    const activeKey = userApiKey || serverKey;
+
+    if (!activeKey) {
+      return res.status(400).json({
+        error:
+          "Missing Gemini API Key. Please sign in and connect your free Gemini API key in the top bar to process your audio.",
+      });
+    }
+
     if (!req.file) {
       return res.status(400).json({ error: "No audio file provided. Please upload an MP3 file." });
     }
@@ -65,7 +106,7 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
     const base64Audio = req.file.buffer.toString("base64");
     const mimeType = req.file.mimetype || "audio/mp3";
 
-    const ai = getAiClient();
+    const ai = getAiClient(activeKey);
 
     const systemInstruction = `You are a professional audiovisual transcriber and expert in North African linguistics, particularly Algerian Darija (the Algerian dialect of Arabic).
 Algerian Darija is unique because it heavily blends Arabic, French, and English in everyday spoken conversation.
@@ -93,9 +134,9 @@ Follow the linguistic script rule strictly: Arabic script for Algerian Darija, L
 Do NOT translate; transcribe verbatim. Align with exact start and end timestamps.
 ${languagePrompt ? `Additional custom guidelines from user: ${languagePrompt}` : ""}`;
 
-    // Make the API call to gemini-3.5-flash
+    // Make the API call to gemini-2.5-flash
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: [
         {
           inlineData: {
@@ -190,7 +231,14 @@ async function startServer() {
   });
 }
 
-// Only listen directly if not running as a Vercel serverless function
-if (!process.env.VERCEL) {
+// Only start standalone HTTP server if not running in a serverless environment (Vercel / Lambda)
+const isServerless = Boolean(
+  process.env.VERCEL ||
+  process.env.NOW_REGION ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.VERCEL_ENV
+);
+
+if (!isServerless) {
   startServer();
 }
