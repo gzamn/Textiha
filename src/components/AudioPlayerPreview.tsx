@@ -19,10 +19,10 @@ interface AudioPlayerPreviewProps {
 }
 
 const BACKDROPS = [
-  { id: "vlog", name: "Kasbah Algiers (Vlog Mockup)", bg: "bg-radial from-orange-400 via-rose-500 to-indigo-900" },
-  { id: "dark", name: "Cinematic Cinema Stage", bg: "bg-slate-950" },
-  { id: "neon", name: "Future Algiers Tech Stage", bg: "bg-gradient-to-tr from-cyan-900 via-indigo-950 to-purple-950" },
-  { id: "vintage", name: "Warm Cafe Background", bg: "bg-gradient-to-b from-amber-900 via-yellow-950 to-stone-900" },
+  { id: "amethyst", name: "Amethyst Stage", bg: "bg-gradient-to-tr from-black via-purple-950 to-purple-900" },
+  { id: "dark", name: "Obsidian Noir", bg: "bg-black" },
+  { id: "twilight", name: "Purple Twilight", bg: "bg-gradient-to-b from-purple-950 via-black to-purple-950" },
+  { id: "studio", name: "Velvet Studio", bg: "bg-gradient-to-br from-purple-900/60 via-black to-purple-950/80" },
 ];
 
 export default function AudioPlayerPreview({
@@ -39,7 +39,7 @@ export default function AudioPlayerPreview({
   const visualizerCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const [backdrop, setBackdrop] = useState("vlog");
+  const [backdrop, setBackdrop] = useState("amethyst");
   const [volume, setVolume] = useState(0.8);
   const [peaks, setPeaks] = useState<number[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -305,7 +305,7 @@ export default function AudioPlayerPreview({
   const activeBackdrop = BACKDROPS.find((b) => b.id === backdrop) || BACKDROPS[0];
 
   return (
-    <div id="audio-player-preview" className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl flex flex-col h-full">
+    <div id="audio-player-preview" className="bg-black border border-purple-900/50 rounded-2xl overflow-hidden shadow-2xl shadow-purple-950/40 flex flex-col h-full">
       {/* Hidden native audio tag */}
       {audioUrl && (
         <audio
@@ -317,24 +317,24 @@ export default function AudioPlayerPreview({
       )}
 
       {/* Backdrop Selector Tabs */}
-      <div className="bg-slate-950 border-b border-slate-800 px-4 py-3 flex items-center justify-between">
-        <span className="text-xs font-semibold text-slate-400 tracking-wider uppercase flex items-center gap-1.5">
-          <Video className="w-3.5 h-3.5 text-purple-400" /> Simulated Video Monitor
+      <div className="bg-black/90 border-b border-purple-900/40 px-4 py-3 flex items-center justify-between">
+        <span className="text-xs font-semibold text-purple-300/80 tracking-wider uppercase flex items-center gap-1.5">
+          <Video className="w-3.5 h-3.5 text-purple-400" /> Video Monitor Stage
         </span>
-        <div className="flex gap-1 bg-slate-900 border border-slate-800 p-1 rounded-lg">
+        <div className="flex gap-1 bg-purple-950/30 border border-purple-900/40 p-1 rounded-lg">
           {BACKDROPS.map((b) => (
             <button
               key={b.id}
               id={`backdrop-tab-${b.id}`}
               type="button"
               onClick={() => setBackdrop(b.id)}
-              className={`px-2 py-1 text-[10px] font-medium rounded-md transition-all ${
+              className={`px-2 py-1 text-[10px] font-medium rounded-md transition-all cursor-pointer ${
                 backdrop === b.id
-                  ? "bg-purple-500/10 text-purple-300 font-bold"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-purple-600/30 text-purple-200 font-bold border border-purple-500/40"
+                  : "text-purple-400/60 hover:text-purple-200"
               }`}
             >
-              {b.id === "vlog" ? "Kasbah" : b.id === "dark" ? "Cinema" : b.id === "neon" ? "Tech" : "Cafe"}
+              {b.id === "amethyst" ? "Amethyst" : b.id === "dark" ? "Obsidian" : b.id === "twilight" ? "Twilight" : "Studio"}
             </button>
           ))}
         </div>
@@ -343,25 +343,25 @@ export default function AudioPlayerPreview({
       {/* Main Video Monitor Stage */}
       <div
         id="video-monitor-stage"
-        className={`relative flex-1 min-h-[250px] md:min-h-[320px] ${activeBackdrop.bg} transition-colors duration-500 flex flex-col justify-between p-6 overflow-hidden`}
+        className={`relative flex-1 min-h-[260px] md:min-h-[320px] ${activeBackdrop.bg} transition-colors duration-500 flex flex-col justify-between p-6 overflow-hidden`}
       >
         {/* Subtle decorative grid/overlay for realism */}
-        <div className="absolute inset-0 bg-grid-pattern opacity-10 pointer-events-none" />
-        <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/30 pointer-events-none" />
+        <div className="absolute inset-0 bg-grid-pattern opacity-20 pointer-events-none" />
+        <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60 pointer-events-none" />
 
         {/* Top Header - Mock Watermark */}
         <div className="flex justify-between items-start z-10">
-          <div className="flex items-center gap-1.5 bg-black/40 backdrop-blur-md border border-white/5 px-2.5 py-1 rounded-full text-[10px] font-mono text-white/70">
+          <div className="flex items-center gap-1.5 bg-black/60 backdrop-blur-md border border-purple-800/40 px-2.5 py-1 rounded-full text-[10px] font-mono text-purple-200">
             <Sparkles className="w-3 h-3 text-purple-400 animate-pulse" />
-            <span>ALGERIAN DARIJA LIVE PREVIEW</span>
+            <span>ALGERIAN DARIJA PREVIEW</span>
           </div>
-          <span className="text-[10px] font-mono text-white/50 bg-black/40 px-2 py-0.5 rounded backdrop-blur-md">
-            {backdrop === "vlog" ? "1080p | 30fps" : "Cinematic 4K"}
+          <span className="text-[10px] font-mono text-purple-300/70 bg-black/60 border border-purple-900/30 px-2 py-0.5 rounded backdrop-blur-md">
+            1080p · 60fps
           </span>
         </div>
 
-        {/* Middle Stage - Waveform overlay (if cinema or abstract selected, looks amazing) */}
-        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center pointer-events-none opacity-20 z-0">
+        {/* Middle Stage - Waveform overlay */}
+        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center pointer-events-none opacity-30 z-0">
           <canvas
             ref={visualizerCanvasRef}
             width={380}
@@ -381,7 +381,7 @@ export default function AudioPlayerPreview({
               : "mb-2 justify-end items-end"
           }`}
           style={{
-            height: "50px", // fixed buffer to avoid bouncing
+            minHeight: "56px",
           }}
         >
           {activeSegment ? (() => {
@@ -394,7 +394,7 @@ export default function AudioPlayerPreview({
             return (
               <div
                 id="active-subtitle-card"
-                className="transition-all duration-150 transform scale-100 ease-out flex flex-col items-center text-center shadow-2xl animate-fade-in"
+                className="transition-all duration-150 transform scale-100 ease-out flex flex-col items-center text-center shadow-2xl animate-fade-in border border-purple-500/20 backdrop-blur-sm"
                 dir={style.direction || "rtl"}
                 style={{
                   fontFamily: style.fontFamily,
@@ -410,7 +410,7 @@ export default function AudioPlayerPreview({
                   textTransform: style.textTransform,
                   textShadow:
                     style.outlineWidth > 0
-                      ? `0 0 0.5px ${style.outlineColor}, ${style.outlineColor} 0px 0px ${style.outlineWidth}px`
+                      ? `0 0 1px ${style.outlineColor}, ${style.outlineColor} 0px 0px ${style.outlineWidth}px`
                       : "none",
                   maxWidth: "90%",
                   lineHeight: "1.4",
@@ -426,7 +426,7 @@ export default function AudioPlayerPreview({
                         key={wIdx}
                         className={`transition-all duration-100 ${
                           isWordActive
-                            ? "text-yellow-300 font-extrabold scale-105 underline decoration-purple-400 decoration-2 underline-offset-4"
+                            ? "text-purple-300 font-extrabold scale-105 underline decoration-purple-400 decoration-2 underline-offset-4 drop-shadow-[0_0_8px_rgba(192,132,252,0.6)]"
                             : ""
                         }`}
                       >
@@ -438,7 +438,7 @@ export default function AudioPlayerPreview({
               </div>
             );
           })() : (
-            <span className="text-white/20 font-mono text-xs italic tracking-wider animate-pulse">
+            <span className="text-purple-300/30 font-mono text-xs italic tracking-wider animate-pulse">
               [ Waiting for speech ]
             </span>
           )}
@@ -446,15 +446,15 @@ export default function AudioPlayerPreview({
       </div>
 
       {/* Playback Controls Panel */}
-      <div className="bg-slate-950 p-4 border-t border-slate-800 space-y-4 z-10">
+      <div className="bg-black/95 p-4 border-t border-purple-900/40 space-y-4 z-10">
         {/* Waveform timeline */}
         <div className="space-y-1.5">
           <div className="flex justify-between items-center px-1">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
-              <Sparkles className="w-3 h-3 text-purple-400" /> Interactive Waveform Timeline
+            <span className="text-[10px] font-bold text-purple-300/80 uppercase tracking-wider flex items-center gap-1">
+              <Sparkles className="w-3 h-3 text-purple-400" /> Waveform Timeline
             </span>
-            <span className="text-[10px] font-mono text-slate-500">
-              Drag or Click to Scrub
+            <span className="text-[10px] font-mono text-purple-400/60">
+              Drag or Click to Seek
             </span>
           </div>
           
@@ -468,7 +468,7 @@ export default function AudioPlayerPreview({
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
             onTouchEnd={handleMouseUp}
-            className="relative h-14 bg-slate-900/60 border border-slate-800/80 rounded-xl overflow-hidden flex items-center justify-center cursor-ew-resize select-none"
+            className="relative h-14 bg-purple-950/20 border border-purple-900/40 rounded-xl overflow-hidden flex items-center justify-center cursor-ew-resize select-none shadow-inner"
           >
             {/* Subtitle segment background highlights */}
             {segments.map((seg) => {
@@ -478,7 +478,7 @@ export default function AudioPlayerPreview({
               return (
                 <div
                   key={seg.id}
-                  className="absolute top-0 bottom-0 bg-purple-500/5 border-x border-purple-500/10 pointer-events-none"
+                  className="absolute top-0 bottom-0 bg-purple-600/10 border-x border-purple-500/20 pointer-events-none"
                   style={{ left: `${left}%`, width: `${width}%` }}
                 />
               );
@@ -496,8 +496,8 @@ export default function AudioPlayerPreview({
                     key={index}
                     className={`w-[2px] sm:w-[3px] mx-[0.5px] rounded-full transition-all duration-150 ${
                       isPlayed
-                        ? "bg-purple-500 shadow-[0_0_3px_rgba(168,85,247,0.4)]"
-                        : "bg-slate-750/70"
+                        ? "bg-gradient-to-t from-purple-600 to-purple-400 shadow-[0_0_4px_rgba(168,85,247,0.6)]"
+                        : "bg-purple-950/70"
                     }`}
                     style={{ height: barHeight }}
                   />
@@ -508,10 +508,10 @@ export default function AudioPlayerPreview({
             {/* Glowing Playhead vertical cursor */}
             {duration > 0 && (
               <div
-                className="absolute top-0 bottom-0 w-0.5 bg-purple-400 pointer-events-none z-10 shadow-[0_0_8px_#a855f7]"
+                className="absolute top-0 bottom-0 w-0.5 bg-purple-400 pointer-events-none z-10 shadow-[0_0_10px_#a855f7]"
                 style={{ left: `${(currentTime / duration) * 100}%` }}
               >
-                <div className="absolute -top-0.5 -left-1.5 w-3.5 h-3.5 rounded-full bg-purple-400 shadow-[0_0_8px_#a855f7] border border-white" />
+                <div className="absolute -top-0.5 -left-1.5 w-3.5 h-3.5 rounded-full bg-purple-400 shadow-[0_0_10px_#a855f7] border border-white" />
               </div>
             )}
           </div>
@@ -519,7 +519,7 @@ export default function AudioPlayerPreview({
 
         {/* Scrubber timeline */}
         <div className="flex items-center space-x-3">
-          <span className="text-xs font-mono text-slate-400 w-12 text-right">
+          <span className="text-xs font-mono text-purple-300/80 w-12 text-right">
             {formatSeconds(currentTime)}
           </span>
           <input
@@ -530,9 +530,9 @@ export default function AudioPlayerPreview({
             step="0.05"
             value={currentTime}
             onChange={handleScrub}
-            className="flex-1 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
+            className="flex-1 h-1.5 bg-purple-950/50 rounded-lg appearance-none cursor-pointer accent-purple-500"
           />
-          <span className="text-xs font-mono text-slate-400 w-12 text-left">
+          <span className="text-xs font-mono text-purple-400/60 w-12 text-left">
             {formatSeconds(duration)}
           </span>
         </div>
@@ -545,10 +545,10 @@ export default function AudioPlayerPreview({
               id="btn-play-pause"
               type="button"
               onClick={() => onPlayPause(!isPlaying)}
-              className={`p-3 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+              className={`p-3 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-lg shadow-purple-950/60 ${
                 isPlaying
-                  ? "bg-purple-600 text-white hover:bg-purple-500 hover:scale-105"
-                  : "bg-slate-800 text-slate-200 hover:bg-slate-700 hover:scale-105"
+                  ? "bg-gradient-to-r from-purple-600 via-purple-700 to-violet-800 text-white hover:from-purple-500 hover:to-violet-700 hover:scale-105"
+                  : "bg-purple-950/50 text-purple-200 border border-purple-800/50 hover:bg-purple-900/60 hover:scale-105 hover:text-white"
               }`}
             >
               {isPlaying ? (
@@ -562,15 +562,15 @@ export default function AudioPlayerPreview({
               type="button"
               onClick={handleRewind}
               title="Rewind 5 seconds"
-              className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
+              className="p-2.5 rounded-lg bg-purple-950/30 border border-purple-900/40 text-purple-300 hover:text-white hover:bg-purple-900/50 transition-colors cursor-pointer"
             >
               <RotateCcw className="w-4 h-4" />
             </button>
           </div>
 
           {/* Volume control */}
-          <div className="flex items-center space-x-2 bg-slate-900 border border-slate-800/80 px-3 py-1.5 rounded-lg max-w-[130px]">
-            <Volume2 className="w-4 h-4 text-slate-400" />
+          <div className="flex items-center space-x-2 bg-purple-950/30 border border-purple-900/40 px-3 py-1.5 rounded-lg max-w-[130px]">
+            <Volume2 className="w-4 h-4 text-purple-400" />
             <input
               id="volume-slider"
               type="range"
@@ -579,7 +579,7 @@ export default function AudioPlayerPreview({
               step="0.1"
               value={volume}
               onChange={(e) => setVolume(parseFloat(e.target.value))}
-              className="w-16 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-slate-400"
+              className="w-16 h-1 bg-purple-950/80 rounded-lg appearance-none cursor-pointer accent-purple-400"
             />
           </div>
         </div>

@@ -22,6 +22,7 @@ import { signInWithGoogle, signOutUser } from "../firebase";
 interface UserAuthBarProps {
   user: User | null;
   geminiApiKey: string;
+  serverKeyAvailable?: boolean;
   onOpenKeyModal: () => void;
   savedHistory: any[];
   onLoadProject: (project: any) => void;
@@ -30,6 +31,7 @@ interface UserAuthBarProps {
 export const UserAuthBar: React.FC<UserAuthBarProps> = ({
   user,
   geminiApiKey,
+  serverKeyAvailable = false,
   onOpenKeyModal,
   savedHistory,
   onLoadProject,
@@ -64,30 +66,30 @@ export const UserAuthBar: React.FC<UserAuthBarProps> = ({
         <div className="relative">
           <button
             onClick={() => setShowHistoryDropdown(!showHistoryDropdown)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/80 hover:bg-slate-800 border border-slate-700/80 text-slate-300 hover:text-white transition-all shadow-sm"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-black/70 hover:bg-purple-950/40 border border-purple-900/40 text-purple-200 hover:text-white transition-all shadow-sm"
             title="Saved Cloud Transcriptions"
           >
-            <History className="w-3.5 h-3.5 text-indigo-400" />
+            <History className="w-3.5 h-3.5 text-purple-400" />
             <span className="hidden md:inline">Cloud History</span>
-            <span className="bg-indigo-900/60 text-indigo-300 px-1.5 py-0.2 rounded text-[10px]">
+            <span className="bg-purple-900/60 text-purple-200 px-1.5 py-0.2 rounded text-[10px] font-bold">
               {savedHistory.length}
             </span>
-            <ChevronDown className="w-3 h-3 text-slate-400" />
+            <ChevronDown className="w-3 h-3 text-purple-400" />
           </button>
 
           {showHistoryDropdown && (
-            <div className="absolute right-0 mt-2 w-72 sm:w-80 bg-slate-900 border border-slate-700 rounded-xl p-3 shadow-2xl z-40 space-y-2">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                <span className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
-                  <FolderOpen className="w-3.5 h-3.5 text-indigo-400" />
+            <div className="absolute right-0 mt-2 w-72 sm:w-80 bg-black/95 border border-purple-900/60 rounded-xl p-3 shadow-2xl shadow-purple-950/50 z-40 space-y-2 backdrop-blur-xl">
+              <div className="flex items-center justify-between border-b border-purple-900/30 pb-2">
+                <span className="text-xs font-semibold text-purple-100 flex items-center gap-1.5">
+                  <FolderOpen className="w-3.5 h-3.5 text-purple-400" />
                   Saved Transcriptions
                 </span>
-                <span className="text-[10px] text-slate-400">{savedHistory.length} saved</span>
+                <span className="text-[10px] text-purple-400">{savedHistory.length} saved</span>
               </div>
               {savedHistory.length === 0 ? (
-                <p className="text-xs text-slate-500 py-3 text-center">No transcriptions saved yet.</p>
+                <p className="text-xs text-purple-400/60 py-3 text-center">No transcriptions saved yet.</p>
               ) : (
-                <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+                <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
                   {savedHistory.map((item) => (
                     <button
                       key={item.id}
@@ -95,18 +97,18 @@ export const UserAuthBar: React.FC<UserAuthBarProps> = ({
                         onLoadProject(item);
                         setShowHistoryDropdown(false);
                       }}
-                      className="w-full text-left p-2 rounded-lg bg-slate-950/60 hover:bg-indigo-950/40 border border-slate-800 hover:border-indigo-800/60 transition-all text-xs group"
+                      className="w-full text-left p-2.5 rounded-lg bg-purple-950/20 hover:bg-purple-900/40 border border-purple-900/30 hover:border-purple-600/50 transition-all text-xs group cursor-pointer"
                     >
-                      <div className="font-medium text-slate-200 truncate group-hover:text-indigo-300">
+                      <div className="font-medium text-purple-100 truncate group-hover:text-purple-300">
                         {item.audioName || "Untitled Recording"}
                       </div>
-                      <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
+                      <div className="flex items-center justify-between text-[10px] text-purple-400/70 mt-1">
                         <span className="flex items-center gap-1">
-                          <FileText className="w-3 h-3 text-slate-500" />
+                          <FileText className="w-3 h-3 text-purple-400" />
                           {item.segments?.length || 0} segments
                         </span>
                         <span className="flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-slate-500" />
+                          <Clock className="w-3 h-3 text-purple-400" />
                           {item.audioDuration ? `${Math.round(item.audioDuration)}s` : "0s"}
                         </span>
                       </div>
@@ -122,44 +124,55 @@ export const UserAuthBar: React.FC<UserAuthBarProps> = ({
       {/* Gemini API Key Button / Status Indicator */}
       <button
         onClick={onOpenKeyModal}
-        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
           geminiApiKey
-            ? "bg-emerald-950/30 border-emerald-800/60 text-emerald-300 hover:bg-emerald-900/40 hover:border-emerald-700"
-            : "bg-amber-950/30 border-amber-800/60 text-amber-300 hover:bg-amber-900/40 hover:border-amber-700 animate-pulse"
+            ? "bg-purple-950/40 border-purple-500/50 text-purple-200 hover:bg-purple-900/50 hover:border-purple-400 shadow-sm shadow-purple-900/30"
+            : serverKeyAvailable
+            ? "bg-black/70 border-purple-900/40 text-purple-300 hover:bg-purple-950/30 hover:text-white"
+            : "bg-purple-950/60 border-purple-600 text-purple-200 hover:bg-purple-900/60 animate-pulse"
         }`}
+        title={
+          geminiApiKey
+            ? "Using your personal Gemini API key"
+            : serverKeyAvailable
+            ? "Using server Gemini API key (Click to connect your own)"
+            : "No API key configured. Click to enter your key."
+        }
       >
-        <Key className="w-3.5 h-3.5 shrink-0" />
+        <Key className="w-3.5 h-3.5 shrink-0 text-purple-400" />
         <span className="hidden sm:inline">
-          {geminiApiKey ? "Personal Key Active" : "Add Gemini Key"}
+          {geminiApiKey ? "Personal Key Active" : serverKeyAvailable ? "API Key Configured" : "Add Gemini Key"}
         </span>
         {geminiApiKey ? (
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          <CheckCircle2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+        ) : serverKeyAvailable ? (
+          <CheckCircle2 className="w-3.5 h-3.5 text-purple-400/80 shrink-0" />
         ) : (
-          <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <AlertTriangle className="w-3.5 h-3.5 text-purple-400 shrink-0" />
         )}
       </button>
 
       {/* Google User Authentication */}
       {user ? (
-        <div className="flex items-center gap-2 bg-slate-800/80 border border-slate-700/80 rounded-xl p-1 sm:pr-2">
+        <div className="flex items-center gap-2 bg-black/70 border border-purple-900/40 rounded-xl p-1 sm:pr-2">
           {user.photoURL ? (
             <img
               src={user.photoURL}
               alt={user.displayName || "User"}
-              className="w-7 h-7 rounded-lg border border-slate-600 object-cover"
+              className="w-7 h-7 rounded-lg border border-purple-800 object-cover"
             />
           ) : (
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-violet-600 to-indigo-600 text-white font-bold flex items-center justify-center text-xs">
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-purple-600 to-violet-700 text-white font-bold flex items-center justify-center text-xs">
               {(user.displayName || user.email || "U").charAt(0).toUpperCase()}
             </div>
           )}
-          <span className="hidden lg:inline text-xs font-medium text-slate-200 max-w-[120px] truncate">
+          <span className="hidden lg:inline text-xs font-medium text-purple-200 max-w-[120px] truncate">
             {user.displayName || user.email?.split("@")[0]}
           </span>
           <button
             onClick={handleSignOut}
             title="Sign Out"
-            className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-700/60 rounded-md transition-colors"
+            className="p-1 text-purple-400 hover:text-white hover:bg-purple-900/40 rounded-md transition-colors cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5" />
           </button>
@@ -168,7 +181,7 @@ export const UserAuthBar: React.FC<UserAuthBarProps> = ({
         <button
           onClick={handleSignIn}
           disabled={isSigningIn}
-          className="flex items-center gap-2 px-3 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold rounded-lg shadow-md shadow-violet-900/20 transition-all active:scale-95 disabled:opacity-50"
+          className="flex items-center gap-2 px-3 py-1.5 bg-gradient-to-r from-purple-600 via-purple-700 to-violet-800 hover:from-purple-500 hover:to-violet-700 text-white text-xs font-semibold rounded-lg shadow-lg shadow-purple-950/60 transition-all active:scale-95 disabled:opacity-50 cursor-pointer border border-purple-500/30"
         >
           {/* Google G SVG */}
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">

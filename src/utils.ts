@@ -6,6 +6,64 @@
 import { SubtitleSegment } from "./types";
 
 /**
+ * Reformats subtitle segments by splitting or wrapping them
+ * based on user-chosen words per sentence and lines per segment.
+ */
+export function reformatSegmentsByFormattingOptions(
+  segments: SubtitleSegment[],
+  wordsPerSentence: number,
+  linesPerPart: number = 1
+): SubtitleSegment[] {
+  if (!segments || segments.length === 0) return [];
+  if (!wordsPerSentence || wordsPerSentence >= 40) return segments;
+
+  const result: SubtitleSegment[] = [];
+
+  for (const seg of segments) {
+    const rawWords = seg.text.trim().split(/\s+/).filter(Boolean);
+    if (rawWords.length === 0) continue;
+
+    if (rawWords.length <= wordsPerSentence) {
+      result.push(seg);
+      continue;
+    }
+
+    const numChunks = Math.ceil(rawWords.length / wordsPerSentence);
+    const duration = Math.max(0.5, seg.end - seg.start);
+
+    for (let i = 0; i < numChunks; i++) {
+      const chunkStart = seg.start + (i / numChunks) * duration;
+      const chunkEnd = seg.start + ((i + 1) / numChunks) * duration;
+
+      const origStartIdx = Math.floor((i * rawWords.length) / numChunks);
+      const origEndIdx = Math.floor(((i + 1) * rawWords.length) / numChunks);
+      const chunkWordList = rawWords.slice(origStartIdx, origEndIdx);
+
+      // If user selected 2 or 3 lines per part and chunk has enough words, format with line breaks
+      let formattedText = chunkWordList.join(" ");
+      if (linesPerPart > 1 && chunkWordList.length >= linesPerPart * 2) {
+        const wordsPerLine = Math.ceil(chunkWordList.length / linesPerPart);
+        const lines: string[] = [];
+        for (let l = 0; l < chunkWordList.length; l += wordsPerLine) {
+          lines.push(chunkWordList.slice(l, l + wordsPerLine).join(" "));
+        }
+        formattedText = lines.join("\n");
+      }
+
+      result.push({
+        id: `${seg.id}_fmt_${i}_${Date.now()}`,
+        start: parseFloat(chunkStart.toFixed(2)),
+        end: parseFloat(chunkEnd.toFixed(2)),
+        text: formattedText,
+        translation: "",
+      });
+    }
+  }
+
+  return result;
+}
+
+/**
  * Reformats subtitle segments by splitting them into smaller pieces
  * if they exceed the user-defined maximum words per line.
  * Uses linear interpolation to align text and timestamps beautifully.
