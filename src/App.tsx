@@ -387,7 +387,7 @@ export default function App() {
         }
       }, 450);
 
-      // Perform fast, reliable JSON request to /api/transcribe
+      // Perform fast, reliable request to /api/transcribe with direct Gemini fallback
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
@@ -395,27 +395,105 @@ export default function App() {
         headers["x-gemini-api-key"] = geminiApiKey.trim();
       }
 
-      const res = await fetch("/api/transcribe", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          audioBase64: base64Audio,
-          mimeType: uploadFile.type || "audio/wav",
-          prompt: customPrompt,
-          geminiApiKey: geminiApiKey.trim(),
-        }),
-      });
+      let resData: any = null;
+      try {
+        const res = await fetch("/api/transcribe", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            audioBase64: base64Audio,
+            mimeType: uploadFile.type || "audio/wav",
+            prompt: customPrompt,
+            geminiApiKey: geminiApiKey.trim(),
+          }),
+        });
 
-      const resData = await res.json().catch(() => null);
+        const rawText = await res.text();
+        try {
+          resData = JSON.parse(rawText);
+        } catch {}
 
-      if (!res.ok) {
-        throw new Error(
-          resData?.error ||
-            `Server returned HTTP error ${res.status}. Please check your connection or Gemini API key.`
-        );
+        if (!res.ok || !resData?.segments || !Array.isArray(resData.segments)) {
+          throw new Error(resData?.error || `Server returned error ${res.status}`);
+        }
+        transcriptionData = resData;
+      } catch (serverErr: any) {
+        console.warn("Backend transcription endpoint error, trying direct Gemini API with personal key:", serverErr);
+
+        const activeKey = geminiApiKey.trim();
+        if (!activeKey) {
+          throw new Error(
+            serverErr.message?.includes("API key") || serverErr.message?.includes("quota")
+              ? serverErr.message
+              : "Server error occurred. Please click 'API Key' in the top bar to connect your Gemini API key."
+          );
+        }
+
+        // Direct Google Generative Language API call
+        const systemInstruction = `You are a professional audio transcriber specializing in Algerian Darija (الدارجة الجزائرية).
+Your task is to listen to the provided audio file and return a JSON array containing timestamps and the verbatim transcript in Algerian Darija.
+
+CRITICAL RULES:
+1. Script: Use Arabic script for Arabic/Darija words (e.g. واش راك, صحا, علابالي, بزاف, كاش جديد) and Latin script for French/English loanwords (e.g. 'c'est bon', 'normal', 'projet', 'merci', 'voilà').
+2. Precision: Provide accurate start and end timestamps in seconds matching speech onsets and pauses.
+3. Output format: You MUST return ONLY a valid JSON array of objects with keys "start", "end", "text", "translation".
+${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
+
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(activeKey)}`;
+
+        const directRes = await fetch(geminiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: systemInstruction }],
+            },
+            contents: [
+              {
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: uploadFile.type || "audio/wav",
+                      data: base64Audio,
+                    },
+                  },
+                  {
+                    text: `Transcribe all spoken phrases in Algerian Darija into timed subtitle segments. Return a JSON array where each object has:
+- start (number, start time in seconds)
+- end (number, end time in seconds)
+- text (verbatim Algerian Darija transcription)
+- translation ("")`,
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              responseMimeType: "application/json",
+            },
+          }),
+        });
+
+        const directJson = await directRes.json();
+        if (!directRes.ok) {
+          throw new Error(
+            directJson?.error?.message ||
+              `Google Gemini API error (${directRes.status}). Please check your API key.`
+          );
+        }
+
+        const rawTextContent = directJson?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!rawTextContent) {
+          throw new Error("No transcription received from Gemini API.");
+        }
+
+        let parsedList: any[] = [];
+        try {
+          parsedList = JSON.parse(rawTextContent.trim());
+        } catch {
+          throw new Error("Failed to parse transcription response format.");
+        }
+        transcriptionData = { segments: parsedList };
       }
-
-      transcriptionData = resData;
 
       if (transcriptionData?.segments && Array.isArray(transcriptionData.segments)) {
         // Complete transcription progress
@@ -622,17 +700,17 @@ export default function App() {
             <button
               onClick={() => setIsKeyModalOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[#1B1327] hover:bg-[#2A2036] border border-[#2A2036] text-[#C084FC] hover:text-[#F3EFFA] transition-all cursor-pointer"
-              title="Configure Gemini API Key"
+              title={geminiApiKey ? "Gemini API Key Connected" : "Configure Gemini API Key"}
             >
               <Key className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">API Key</span>
+              <span>API Key</span>
+              {geminiApiKey && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              )}
             </button>
 
             <UserAuthBar
               user={currentUser}
-              geminiApiKey={geminiApiKey}
-              serverKeyAvailable={serverKeyAvailable}
-              onOpenKeyModal={() => setIsKeyModalOpen(true)}
               savedHistory={savedHistory}
               onLoadProject={handleLoadSavedProject}
             />

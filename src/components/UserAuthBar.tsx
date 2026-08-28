@@ -21,18 +21,12 @@ import { signInWithGoogle, signOutUser } from "../firebase";
 
 interface UserAuthBarProps {
   user: User | null;
-  geminiApiKey: string;
-  serverKeyAvailable?: boolean;
-  onOpenKeyModal: () => void;
   savedHistory: any[];
   onLoadProject: (project: any) => void;
 }
 
 export const UserAuthBar: React.FC<UserAuthBarProps> = ({
   user,
-  geminiApiKey,
-  serverKeyAvailable = false,
-  onOpenKeyModal,
   savedHistory,
   onLoadProject,
 }) => {
@@ -120,37 +114,6 @@ export const UserAuthBar: React.FC<UserAuthBarProps> = ({
           )}
         </div>
       )}
-
-      {/* Gemini API Key Button / Status Indicator */}
-      <button
-        onClick={onOpenKeyModal}
-        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
-          geminiApiKey
-            ? "bg-purple-950/40 border-purple-500/50 text-purple-200 hover:bg-purple-900/50 hover:border-purple-400 shadow-sm shadow-purple-900/30"
-            : serverKeyAvailable
-            ? "bg-black/70 border-purple-900/40 text-purple-300 hover:bg-purple-950/30 hover:text-white"
-            : "bg-purple-950/60 border-purple-600 text-purple-200 hover:bg-purple-900/60 animate-pulse"
-        }`}
-        title={
-          geminiApiKey
-            ? "Using your personal Gemini API key"
-            : serverKeyAvailable
-            ? "Using server Gemini API key (Click to connect your own)"
-            : "No API key configured. Click to enter your key."
-        }
-      >
-        <Key className="w-3.5 h-3.5 shrink-0 text-purple-400" />
-        <span className="hidden sm:inline">
-          {geminiApiKey ? "Personal Key Active" : serverKeyAvailable ? "API Key Configured" : "Add Gemini Key"}
-        </span>
-        {geminiApiKey ? (
-          <CheckCircle2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-        ) : serverKeyAvailable ? (
-          <CheckCircle2 className="w-3.5 h-3.5 text-purple-400/80 shrink-0" />
-        ) : (
-          <AlertTriangle className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-        )}
-      </button>
 
       {/* Google User Authentication */}
       {user ? (
