@@ -158,6 +158,22 @@ function writeString(view: DataView, offset: number, string: string) {
 }
 
 /**
+ * Converts a Blob or File to a base64 encoded string without the data URL prefix.
+ */
+export async function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+      resolve(base64 || "");
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
  * Reformats subtitle segments by splitting or wrapping them
  * based on user-chosen words per sentence and lines per segment.
  */

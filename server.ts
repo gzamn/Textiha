@@ -48,7 +48,7 @@ function getAiClient(userKey?: string): GoogleGenAI {
   });
 }
 
-// Shared transcription processor using Gemini 2.5 Flash
+// Shared transcription processor using Gemini models
 async function processTranscriptionWithGemini(
   activeKey: string,
   buffer: Buffer,
@@ -87,75 +87,98 @@ Format the response strictly as a JSON array matching the schema.`;
 Ensure each segment starts exactly when speech begins and disappears when speech pauses/stops.
 ${languagePrompt ? `Additional user instructions: ${languagePrompt}` : ""}`;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: [
-      {
-        inlineData: {
-          data: base64Audio,
-          mimeType: mimeType || "audio/mp3",
-        },
-      },
-      {
-        text: userPrompt,
-      },
-    ],
-    config: {
-      systemInstruction,
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.ARRAY,
-        description: "List of subtitle segments with timestamps.",
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            start: {
-              type: Type.NUMBER,
-              description: "Precise start timestamp in seconds (e.g. 1.45). Must match exact voice onset.",
-            },
-            end: {
-              type: Type.NUMBER,
-              description: "Precise end timestamp in seconds (e.g. 3.20). Must match exact voice offset.",
-            },
-            text: {
-              type: Type.STRING,
-              description: "Verbatim transcription in hybrid Arabic and Latin script.",
-            },
-            translation: {
-              type: Type.STRING,
-              description: "Empty string.",
+  // Priority models for multimodal transcription
+  const modelsToTry = ["gemini-2.5-flash", "gemini-3.7-flash"];
+  let lastError: any = null;
+
+  for (const modelName of modelsToTry) {
+    try {
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: [
+          {
+            inlineData: {
+              data: base64Audio,
+              mimeType: mimeType || "audio/wav",
             },
           },
-          required: ["start", "end", "text", "translation"],
+          {
+            text: userPrompt,
+          },
+        ],
+        config: {
+          systemInstruction,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            description: "List of subtitle segments with timestamps.",
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                start: {
+                  type: Type.NUMBER,
+                  description: "Precise start timestamp in seconds (e.g. 1.45). Must match exact voice onset.",
+                },
+                end: {
+                  type: Type.NUMBER,
+                  description: "Precise end timestamp in seconds (e.g. 3.20). Must match exact voice offset.",
+                },
+                text: {
+                  type: Type.STRING,
+                  description: "Verbatim transcription in hybrid Arabic and Latin script.",
+                },
+                translation: {
+                  type: Type.STRING,
+                  description: "Empty string.",
+                },
+              },
+              required: ["start", "end", "text", "translation"],
+            },
+          },
         },
-      },
-    },
-  });
+      });
 
-  const responseText = response.text;
-  if (!responseText) {
-    throw new Error("Empty response received from Gemini API.");
+      const responseText = response.text;
+      if (!responseText) {
+        throw new Error("Empty response received from Gemini API.");
+      }
+
+      const rawSegments: any[] = JSON.parse(responseText.trim());
+
+      // Clean, validate and sanitize timestamps
+      const sanitized = rawSegments
+        .filter((s) => s && typeof s.text === "string" && s.text.trim().length > 0)
+        .map((s) => {
+          let start = typeof s.start === "number" ? s.start : parseFloat(s.start) || 0;
+          let end = typeof s.end === "number" ? s.end : parseFloat(s.end) || start + 1.5;
+          if (end <= start) end = start + 1.2;
+          return {
+            start: parseFloat(start.toFixed(2)),
+            end: parseFloat(end.toFixed(2)),
+            text: s.text.trim(),
+            translation: "",
+          };
+        })
+        .sort((a, b) => a.start - b.start);
+
+      return sanitized;
+    } catch (err: any) {
+      console.warn(`Attempt with ${modelName} encountered error:`, err?.message || err);
+      lastError = err;
+      const msg = err?.message || "";
+      if (
+        msg.includes("API_KEY_INVALID") ||
+        msg.includes("API key not valid") ||
+        msg.includes("PERMISSION_DENIED") ||
+        msg.includes("RESOURCE_EXHAUSTED")
+      ) {
+        // Fail fast on credential / quota issues
+        throw err;
+      }
+    }
   }
 
-  const rawSegments: any[] = JSON.parse(responseText.trim());
-
-  // Clean, validate and sanitize timestamps
-  const sanitized = rawSegments
-    .filter((s) => s && typeof s.text === "string" && s.text.trim().length > 0)
-    .map((s) => {
-      let start = typeof s.start === "number" ? s.start : parseFloat(s.start) || 0;
-      let end = typeof s.end === "number" ? s.end : parseFloat(s.end) || start + 1.5;
-      if (end <= start) end = start + 1.2;
-      return {
-        start: parseFloat(start.toFixed(2)),
-        end: parseFloat(end.toFixed(2)),
-        text: s.text.trim(),
-        translation: "",
-      };
-    })
-    .sort((a, b) => a.start - b.start);
-
-  return sanitized;
+  throw lastError || new Error("Failed to process audio with Gemini.");
 }
 
 // Global CORS handling for Vercel, previews, and custom domains
@@ -222,7 +245,7 @@ app.post(["/api/validate-key", "/validate-key"], async (req, res) => {
   }
 });
 
-// 4. Transcription endpoint for standard uploads (< 25 MB)
+// 4. Transcription endpoint for standard uploads
 app.post(["/api/transcribe", "/transcribe"], upload.single("audio"), async (req, res) => {
   try {
     const userApiKey =
@@ -231,25 +254,37 @@ app.post(["/api/transcribe", "/transcribe"], upload.single("audio"), async (req,
       (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.substring(7) : undefined);
 
     const serverKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
-    const activeKey = userApiKey || serverKey;
+    const activeKey = (userApiKey && userApiKey.trim()) || serverKey;
 
     if (!activeKey) {
       return res.status(400).json({
         error:
-          "Missing Gemini API Key. Please sign in and connect your free Gemini API key in the top bar to process your audio.",
+          "Missing Gemini API Key. Please click the 'API Key' button in the top bar to connect your personal Gemini API key.",
       });
     }
 
-    if (!req.file) {
-      return res.status(400).json({ error: "No audio file provided. Please upload an audio/video file." });
+    let buffer: Buffer | null = null;
+    let mimeType = "audio/wav";
+
+    // 1. Check if audio was sent as base64 in JSON payload
+    if (req.body?.audioBase64) {
+      buffer = Buffer.from(req.body.audioBase64, "base64");
+      mimeType = req.body.mimeType || "audio/wav";
+    } else if (req.file?.buffer) {
+      // 2. Check if audio was sent via multipart/form-data
+      buffer = req.file.buffer;
+      mimeType = req.file.mimetype || "audio/mp3";
     }
 
-    const languagePrompt = req.body.prompt || "";
-    const mimeType = req.file.mimetype || "audio/mp3";
+    if (!buffer || buffer.length === 0) {
+      return res.status(400).json({ error: "No audio stream received. Please select an audio or video file." });
+    }
+
+    const languagePrompt = req.body?.prompt || "";
 
     const segments = await processTranscriptionWithGemini(
       activeKey,
-      req.file.buffer,
+      buffer,
       mimeType,
       languagePrompt
     );
@@ -257,8 +292,21 @@ app.post(["/api/transcribe", "/transcribe"], upload.single("audio"), async (req,
     return res.json({ segments });
   } catch (error: any) {
     console.error("Transcription error:", error);
+    const msg = error?.message || "Failed to transcribe audio.";
+
+    if (msg.includes("API_KEY_INVALID") || msg.includes("API key not valid")) {
+      return res.status(401).json({
+        error: "Your Gemini API Key is invalid or expired. Please update it in the top bar.",
+      });
+    }
+    if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota")) {
+      return res.status(429).json({
+        error: "Gemini API rate limit exceeded or free quota exhausted. Please try again in a moment.",
+      });
+    }
+
     return res.status(500).json({
-      error: error.message || "Failed to transcribe audio. Please check your API key and file format.",
+      error: msg,
     });
   }
 });

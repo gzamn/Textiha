@@ -12,6 +12,7 @@ import {
   exportToJSON,
   reformatSegmentsByFormattingOptions,
   extractAndOptimizeAudio,
+  blobToBase64,
   SAMPLE_PROJECTS,
 } from "./utils";
 import { UserAuthBar } from "./components/UserAuthBar";
@@ -352,8 +353,8 @@ export default function App() {
       let transcriptionData: any = null;
 
       // 1. Extract and optimize audio track client-side
-      // This reduces 10MB-500MB videos down to ultra-compact < 3MB voice WAV streams
-      // completely eliminating Vercel's 4.5MB request limit (HTTP 413) and avoiding heavy upload delays!
+      // Converts 10MB-500MB videos down to compact < 2MB voice WAV streams
+      // completely eliminating Vercel's 4.5MB request limit (HTTP 413) and avoiding heavy upload delays
       const { file: uploadFile, isExtracted, originalSize, optimizedSize } =
         await extractAndOptimizeAudio(audioFile, (status) => setTranscribingStatus(status));
 
@@ -363,201 +364,58 @@ export default function App() {
         );
       }
 
-      const isLargeFile = uploadFile.size > 20 * 1024 * 1024; // Only if extracted stream is still > 20MB
+      setTranscribingStatus("Encoding audio stream...");
+      const base64Audio = await blobToBase64(uploadFile);
 
-      if (isLargeFile) {
-        // --- Fallback: BUNNY CDN DIRECT STORAGE UPLOAD FOR EXTREMELY LARGE RAW FILES ---
-        setTranscribingStatus("Connecting to storage server...");
+      setUploadProgress(100);
+      setTranscriptionPhase("transcribing");
+      setTranscriptionProgress(10);
+      setTranscribingStatus("Transcribing Algerian Darija with Gemini AI...");
 
-        const configRes = await fetch("/api/bunny-config");
-        if (!configRes.ok) {
-          throw new Error("Storage server configuration not available. Please try a shorter audio clip.");
+      let currentProg = 10;
+      let msgIndex = 1;
+      progressTimer.current = setInterval(() => {
+        currentProg += Math.floor(Math.random() * 4) + 2;
+        if (currentProg > 94) {
+          currentProg = 94;
         }
-        const bunny = await configRes.json();
+        setTranscriptionProgress(currentProg);
 
-        const cleanName = uploadFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const storagePath = `uploads/${Date.now()}_${cleanName}`;
-        const bunnyUploadUrl = `https://${bunny.storageHost}/${bunny.storageZone}/${storagePath}`;
-
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("PUT", bunnyUploadUrl);
-          xhr.setRequestHeader("AccessKey", bunny.accessKey);
-          xhr.setRequestHeader("Content-Type", uploadFile.type || "application/octet-stream");
-
-          xhr.upload.onprogress = (event) => {
-            if (event.lengthComputable) {
-              const percent = Math.min(100, Math.round((event.loaded / event.total) * 100));
-              setUploadProgress(percent);
-              setUploadLoadedBytes(event.loaded);
-              setUploadTotalBytes(event.total);
-              setTranscribingStatus(`Uploading to storage (${percent}%)...`);
-            }
-          };
-
-          xhr.onload = () => {
-            if (xhr.status === 200 || xhr.status === 201) {
-              resolve();
-            } else {
-              reject(
-                new Error(
-                  `Storage server returned HTTP ${xhr.status}. Please check your connection.`
-                )
-              );
-            }
-          };
-
-          xhr.onerror = () => {
-            reject(new Error("Network error occurred while uploading file."));
-          };
-
-          xhr.ontimeout = () => {
-            reject(new Error("Upload timed out."));
-          };
-
-          xhr.send(uploadFile);
-        });
-
-        // Transition to transcribing stage
-        setUploadProgress(100);
-        setTranscriptionPhase("transcribing");
-        setTranscriptionProgress(5);
-        setTranscribingStatus("Transcribing with Gemini 2.5 Flash...");
-
-        let currentProg = 5;
-        let msgIndex = 1;
-        progressTimer.current = setInterval(() => {
-          currentProg += Math.floor(Math.random() * 4) + 2;
-          if (currentProg > 94) {
-            currentProg = 94;
-          }
-          setTranscriptionProgress(currentProg);
-
-          if (currentProg % 15 === 0 && msgIndex < STATUS_MESSAGES.length) {
-            setTranscribingStatus(STATUS_MESSAGES[msgIndex]);
-            msgIndex++;
-          }
-        }, 450);
-
-        const res = await fetch("/api/transcribe-bunny", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(geminiApiKey.trim() ? { "x-gemini-api-key": geminiApiKey.trim() } : {}),
-          },
-          body: JSON.stringify({
-            storagePath,
-            fileName: uploadFile.name,
-            mimeType: uploadFile.type || "audio/wav",
-            prompt: customPrompt,
-            geminiApiKey: geminiApiKey.trim(),
-          }),
-        });
-
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || `Server returned HTTP ${res.status}`);
+        if (currentProg % 15 === 0 && msgIndex < STATUS_MESSAGES.length) {
+          setTranscribingStatus(STATUS_MESSAGES[msgIndex]);
+          msgIndex++;
         }
+      }, 450);
 
-        transcriptionData = await res.json();
-      } else {
-        // --- 2. FAST DIRECT UPLOAD (Compact audio < 3.5MB, fully Vercel-compatible) ---
-        const formData = new FormData();
-        formData.append("audio", uploadFile);
-        formData.append("prompt", customPrompt);
-        if (geminiApiKey.trim()) {
-          formData.append("geminiApiKey", geminiApiKey.trim());
-        }
-
-        const xhr = new XMLHttpRequest();
-
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const percent = Math.min(100, Math.round((event.loaded / event.total) * 100));
-            setUploadProgress(percent);
-            setUploadLoadedBytes(event.loaded);
-            setUploadTotalBytes(event.total);
-            setTranscribingStatus(`Uploading audio stream (${percent}%)...`);
-          }
-        };
-
-        xhr.upload.onload = () => {
-          setUploadProgress(100);
-          setTranscriptionPhase("transcribing");
-          setTranscriptionProgress(5);
-          setTranscribingStatus("Transcribing with Gemini 2.5 Flash...");
-
-          let currentProg = 5;
-          let msgIndex = 1;
-          progressTimer.current = setInterval(() => {
-            currentProg += Math.floor(Math.random() * 4) + 2;
-            if (currentProg > 94) {
-              currentProg = 94;
-            }
-            setTranscriptionProgress(currentProg);
-
-            if (currentProg % 15 === 0 && msgIndex < STATUS_MESSAGES.length) {
-              setTranscribingStatus(STATUS_MESSAGES[msgIndex]);
-              msgIndex++;
-            }
-          }, 450);
-        };
-
-        const transcriptionPromise = new Promise<{ status: number; data: any }>((resolve, reject) => {
-          xhr.open("POST", "/api/transcribe");
-          if (geminiApiKey.trim()) {
-            xhr.setRequestHeader("x-gemini-api-key", geminiApiKey.trim());
-          }
-
-          xhr.onload = () => {
-            if (xhr.status === 413) {
-              reject(
-                new Error(
-                  "File payload exceeded serverless limit. Please choose a shorter file or audio clip."
-                )
-              );
-              return;
-            }
-
-            try {
-              const json = JSON.parse(xhr.responseText);
-              resolve({ status: xhr.status, data: json });
-            } catch {
-              if (xhr.status >= 400) {
-                reject(
-                  new Error(
-                    `Server returned HTTP error ${xhr.status}. Please check your connection or Gemini API key.`
-                  )
-                );
-              } else {
-                reject(
-                  new Error(
-                    `Server returned unexpected response (HTTP ${xhr.status})`
-                  )
-                );
-              }
-            }
-          };
-
-          xhr.onerror = () => {
-            reject(new Error("Network error occurred during transcription upload. Please check your connection."));
-          };
-
-          xhr.ontimeout = () => {
-            reject(new Error("Transcription request timed out. Please try again."));
-          };
-
-          xhr.send(formData);
-        });
-
-        const { status, data } = await transcriptionPromise;
-
-        if (status !== 200) {
-          throw new Error(data?.error || "Failed to transcribe audio. Please check your Gemini API key.");
-        }
-
-        transcriptionData = data;
+      // Perform fast, reliable JSON request to /api/transcribe
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (geminiApiKey.trim()) {
+        headers["x-gemini-api-key"] = geminiApiKey.trim();
       }
+
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          audioBase64: base64Audio,
+          mimeType: uploadFile.type || "audio/wav",
+          prompt: customPrompt,
+          geminiApiKey: geminiApiKey.trim(),
+        }),
+      });
+
+      const resData = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(
+          resData?.error ||
+            `Server returned HTTP error ${res.status}. Please check your connection or Gemini API key.`
+        );
+      }
+
+      transcriptionData = resData;
 
       if (transcriptionData?.segments && Array.isArray(transcriptionData.segments)) {
         // Complete transcription progress
