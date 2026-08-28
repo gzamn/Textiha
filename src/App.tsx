@@ -1806,6 +1806,7 @@ ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
         onClose={() => setIsKeyModalOpen(false)}
         currentKey={geminiApiKey}
         onSave={handleSaveGeminiKey}
+        onSaveKey={handleSaveGeminiKey}
         userEmail={currentUser?.email || undefined}
       />
     </div>

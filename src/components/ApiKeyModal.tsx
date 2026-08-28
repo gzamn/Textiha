@@ -10,7 +10,8 @@ interface ApiKeyModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentKey: string;
-  onSaveKey: (key: string) => Promise<boolean | void>;
+  onSave?: (key: string) => Promise<boolean | void> | void;
+  onSaveKey?: (key: string) => Promise<boolean | void> | void;
   userEmail?: string;
 }
 
@@ -18,6 +19,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   isOpen,
   onClose,
   currentKey,
+  onSave,
   onSaveKey,
   userEmail,
 }) => {
@@ -112,7 +114,11 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         message: "API Key verified and saved successfully!",
       });
 
-      await onSaveKey(trimmed);
+      const saveCallback = onSaveKey || onSave;
+      if (typeof saveCallback === "function") {
+        await saveCallback(trimmed);
+      }
+
       setTimeout(() => {
         onClose();
       }, 700);
@@ -128,7 +134,10 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
   const handleRemove = async () => {
     setApiKey("");
-    await onSaveKey("");
+    const saveCallback = onSaveKey || onSave;
+    if (typeof saveCallback === "function") {
+      await saveCallback("");
+    }
     setTestResult({
       status: "idle",
       message: "Key removed.",
