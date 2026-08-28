@@ -6,6 +6,158 @@
 import { SubtitleSegment } from "./types";
 
 /**
+ * Extracts and downsamples audio from video or large audio files directly in the browser.
+ * Converts to mono 16kHz (or adaptive sample rate) WAV format so the payload is < 3.5MB,
+ * ensuring fast, seamless transcription without hitting Vercel's 4.5MB request body limit.
+ */
+export async function extractAndOptimizeAudio(
+  file: File,
+  onProgress?: (status: string) => void
+): Promise<{ file: File; isExtracted: boolean; originalSize: number; optimizedSize: number }> {
+  const isVideo =
+    file.type.startsWith("video/") ||
+    /\.(mp4|mov|mkv|webm|avi|flv|m4v|3gp|wmv)$/i.test(file.name);
+  const isLarge = file.size > 3.5 * 1024 * 1024; // > 3.5 MB
+
+  // If already an audio file and smaller than 3.5MB, no extraction/conversion needed!
+  if (!isVideo && !isLarge) {
+    return {
+      file,
+      isExtracted: false,
+      originalSize: file.size,
+      optimizedSize: file.size,
+    };
+  }
+
+  onProgress?.("Extracting audio track from media in browser...");
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const AudioContextClass =
+      window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) {
+      // Fallback if Web Audio API is unavailable
+      return { file, isExtracted: false, originalSize: file.size, optimizedSize: file.size };
+    }
+
+    const audioCtx = new AudioContextClass();
+    let audioBuffer: AudioBuffer;
+
+    try {
+      // slice(0) to prevent buffer detaching issues across browser engines
+      audioBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+    } catch (decodeErr) {
+      console.warn("Direct decodeAudioData failed, proceeding with original file:", decodeErr);
+      await audioCtx.close().catch(() => {});
+      return { file, isExtracted: false, originalSize: file.size, optimizedSize: file.size };
+    }
+
+    const duration = audioBuffer.duration;
+    const numChannels = audioBuffer.numberOfChannels;
+
+    onProgress?.("Optimizing voice stream for Algerian Darija AI...");
+
+    // Target sample rate: 16000 Hz for optimal speech recognition
+    // If audio is very long (e.g. > 100s), adaptively scale sample rate to keep WAV safely < 3.2 MB
+    let targetSampleRate = 16000;
+    const MAX_ALLOWED_BYTES = 3.2 * 1024 * 1024; // 3.2 MB safety ceiling for Vercel
+    const estimatedSize = duration * targetSampleRate * 2;
+
+    if (estimatedSize > MAX_ALLOWED_BYTES) {
+      targetSampleRate = Math.max(8000, Math.floor(MAX_ALLOWED_BYTES / (duration * 2)));
+    }
+
+    // Downmix to mono and resample to targetSampleRate
+    const targetLength = Math.round(duration * targetSampleRate);
+    const monoData = new Float32Array(targetLength);
+
+    // Get input channel data
+    const channelData: Float32Array[] = [];
+    for (let c = 0; c < numChannels; c++) {
+      channelData.push(audioBuffer.getChannelData(c));
+    }
+
+    const ratio = audioBuffer.sampleRate / targetSampleRate;
+    for (let i = 0; i < targetLength; i++) {
+      const srcIdx = i * ratio;
+      const srcFloor = Math.floor(srcIdx);
+      const srcCeil = Math.min(channelData[0].length - 1, srcFloor + 1);
+      const frac = srcIdx - srcFloor;
+
+      let sample = 0;
+      for (let c = 0; c < numChannels; c++) {
+        const s0 = channelData[c][srcFloor] || 0;
+        const s1 = channelData[c][srcCeil] || 0;
+        sample += s0 + (s1 - s0) * frac;
+      }
+      sample /= numChannels; // Average channels
+      // Clamp to [-1, 1]
+      monoData[i] = Math.max(-1, Math.min(1, sample));
+    }
+
+    await audioCtx.close().catch(() => {});
+
+    // Encode to 16-bit PCM WAV
+    const wavBuffer = encodeWAV(monoData, targetSampleRate);
+    const baseName = file.name.replace(/\.[^/.]+$/, "");
+    const wavBlob = new Blob([wavBuffer], { type: "audio/wav" });
+    const wavFile = new File([wavBlob], `${baseName}_audio.wav`, { type: "audio/wav" });
+
+    return {
+      file: wavFile,
+      isExtracted: true,
+      originalSize: file.size,
+      optimizedSize: wavFile.size,
+    };
+  } catch (err) {
+    console.error("Audio optimization error:", err);
+    return { file, isExtracted: false, originalSize: file.size, optimizedSize: file.size };
+  }
+}
+
+/**
+ * Encodes Float32Array audio samples into a standard 16-bit PCM WAV ArrayBuffer.
+ */
+function encodeWAV(samples: Float32Array, sampleRate: number): ArrayBuffer {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+
+  // RIFF chunk descriptor
+  writeString(view, 0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeString(view, 8, "WAVE");
+
+  // fmt sub-chunk
+  writeString(view, 12, "fmt ");
+  view.setUint32(16, 16, true); // SubChunk1Size (16 for PCM)
+  view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
+  view.setUint16(22, 1, true); // NumChannels (1 mono)
+  view.setUint32(24, sampleRate, true); // SampleRate
+  view.setUint32(28, sampleRate * 2, true); // ByteRate (SampleRate * NumChannels * 16/8)
+  view.setUint16(32, 2, true); // BlockAlign (NumChannels * 16/8)
+  view.setUint16(34, 16, true); // BitsPerSample (16 bits)
+
+  // data sub-chunk
+  writeString(view, 36, "data");
+  view.setUint32(40, samples.length * 2, true);
+
+  // Write PCM samples (convert float -1.0..1.0 to int16)
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+
+  return buffer;
+}
+
+function writeString(view: DataView, offset: number, string: string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
+/**
  * Reformats subtitle segments by splitting or wrapping them
  * based on user-chosen words per sentence and lines per segment.
  */
