@@ -10,7 +10,9 @@ import {
   exportToSRT,
   exportToVTT,
   exportToJSON,
+  exportToASS,
   reformatSegmentsByFormattingOptions,
+  verifyAndRefineTimings,
   extractAndOptimizeAudio,
   blobToBase64,
   SAMPLE_PROJECTS,
@@ -100,7 +102,7 @@ export default function App() {
   const mediaElementRef = useRef<HTMLMediaElement | null>(null);
 
   // Formatting states for user options
-  const [wordsPerSentence, setWordsPerSentence] = useState<number>(style.maxWordsPerSegment || 4);
+  const [wordsPerSentence, setWordsPerSentence] = useState<number>(style.maxWordsPerSegment || 3);
   const [linesPerPart, setLinesPerPart] = useState<number>(style.maxLinesPerSegment || 1);
 
   // Loading & Error States
@@ -430,13 +432,25 @@ export default function App() {
         }
 
         // Direct Google Generative Language API call
-        const systemInstruction = `You are a professional audio transcriber specializing in Algerian Darija (الدارجة الجزائرية).
-Your task is to listen to the provided audio file and return a JSON array containing timestamps and the verbatim transcript in Algerian Darija.
+        const systemInstruction = `You are a world-class professional audiovisual transcriber specializing in Algerian Darija (الدارجة الجزائرية).
+Your task is to transcribe the provided audio/video into precise timed subtitle segments with STRICT SCRIPT ENFORCEMENT.
 
-CRITICAL RULES:
-1. Script: Use Arabic script for Arabic/Darija words (e.g. واش راك, صحا, علابالي, بزاف, كاش جديد) and Latin script for French/English loanwords (e.g. 'c'est bon', 'normal', 'projet', 'merci', 'voilà').
-2. Precision: Provide accurate start and end timestamps in seconds matching speech onsets and pauses.
-3. Output format: You MUST return ONLY a valid JSON array of objects with keys "start", "end", "text", "translation".
+MANDATORY SCRIPT RULES:
+1. LATIN SCRIPT FOR ALL FRENCH & ENGLISH WORDS:
+   - Any French or English words, brand names, slang, technology terms, or loanwords MUST be written strictly in Latin letters with proper spelling (e.g. 'normal', 'merci', 'projet', 'c'est bon', 'voilà', 'l\'équipe', 'weekend', 'application', 'business', 'design', 'service', 'meeting', 'cool', 'top', 'vidéo', 'photo', 'story').
+   - NEVER transliterate French/English words into Arabic script (e.g. do NOT write 'نورمال', 'ميرسي', 'بروجي', 'سي بون', 'فوالا', 'فيديو').
+2. ARABIC SCRIPT FOR ARABIC & DARIJA WORDS:
+   - All Algerian Darija and Arabic dialect vocabulary, grammar particles, and verbs MUST be written in Arabic script (e.g. واش راك, صحا, علابالي, بزاف, كاش جديد, اليوم راني, خاوتي, حاب, نروحوا).
+3. EXAMPLES:
+   - "سلام l'équipe اليوم راني رايح ندير un nouveau projet في web development"
+   - "هذا le problème بزاف simple، غير نديروا update لـ l'application و c'est bon"
+
+CRITICAL TIMING & ACCURACY:
+- START ONSET: Concentrate strictly on the very first sound/letter of the first word you transcribe in each sentence and anchor 'start' right at that exact millisecond.
+- END OFFSET: Focus on the last letter of the last word of the phrase to keep the caption visible throughout vocalization.
+- SILENCES: If there are silences or pauses between sentences, leave them blank so subtitles disappear cleanly during silence.
+- LENGTH: Break speech into short, readable subtitle segments averaging 3 words (2 to 4 words per segment).
+- Output format: Return ONLY a valid JSON array of objects with keys "start", "end", "text", "translation".
 ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
 
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(activeKey)}`;
@@ -458,10 +472,10 @@ ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
                     },
                   },
                   {
-                    text: `Transcribe all spoken phrases in Algerian Darija into timed subtitle segments. Return a JSON array where each object has:
+                    text: `Transcribe all spoken phrases in Algerian Darija into timed subtitle segments (strictly 3 words per subtitle part by default). Return a JSON array where each object has:
 - start (number, start time in seconds)
 - end (number, end time in seconds)
-- text (verbatim Algerian Darija transcription)
+- text (verbatim Algerian Darija transcription, ~3 words per part)
 - translation ("")`,
                   },
                 ],
@@ -502,19 +516,30 @@ ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
         setTranscribingStatus("Transcription finished! Preparing editor...");
 
         const parsedSegments: SubtitleSegment[] = transcriptionData.segments.map(
-          (seg: any, idx: number) => ({
-            id: `seg_${Date.now()}_${idx}`,
-            start: parseFloat(seg.start) || 0,
-            end: parseFloat(seg.end) || 0,
-            text: seg.text || "",
-            translation: "",
-          })
+          (seg: any, idx: number) => {
+            const start = parseFloat(seg.start) || 0;
+            const end = parseFloat(seg.end) || (start + 1.2);
+            const text = (seg.text || "").trim();
+            return {
+              id: `seg_${Date.now()}_${idx}`,
+              start,
+              end,
+              text,
+              translation: "",
+            };
+          }
         );
+
+        // Run Wave 2 timing verification & alignment
+        const verifiedSegments = verifyAndRefineTimings(parsedSegments, {
+          bridgeMicroGaps: true,
+          maxBridgeSeconds: 0.30,
+        });
 
         // Brief delay so the user perceives the 100% completion
         await new Promise((r) => setTimeout(r, 450));
 
-        setSegments(parsedSegments);
+        setSegments(verifiedSegments);
         setCurrentTime(0);
         setIsPlaying(false);
 
@@ -524,7 +549,7 @@ ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
             await saveTranscriptionToHistory(currentUser.uid, {
               audioName: audioFile.name,
               audioDuration: audioDuration,
-              segments: parsedSegments,
+              segments: verifiedSegments,
               guidelines: customPrompt,
             });
             const updated = await fetchUserTranscriptionHistory(currentUser.uid);
@@ -626,6 +651,10 @@ ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
       exportText = exportToSRT(currentSegments);
       mimeType = "application/x-subrip";
       fileExt = "srt";
+    } else if (exportFormat === "ASS") {
+      exportText = exportToASS(currentSegments, style);
+      mimeType = "text/x-ssa";
+      fileExt = "ass";
     } else if (exportFormat === "VTT") {
       exportText = exportToVTT(currentSegments);
       mimeType = "text/vtt";
@@ -1201,7 +1230,7 @@ ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
                         {isVideoFile ? "Video Preview" : "Audio Preview"}
                       </div>
 
-                      {/* Subtitle Element on Stage with Full Overflow Protection and Text Alignment */}
+                      {/* Subtitle Element on Stage with Full Overflow Protection and Clean Simple Styling */}
                       {previewDisplayText ? (
                         <div
                           id="previewSub"
@@ -1226,7 +1255,7 @@ ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
                             wordBreak: "break-word",
                             overflowWrap: "break-word",
                             whiteSpace: "pre-wrap",
-                            transition: "all 0.1s ease-out",
+                            transition: "all 0.08s ease-out",
                             boxShadow: style.backgroundEnabled ? "0 4px 16px rgba(0,0,0,0.4)" : "none",
                             textShadow: style.backgroundEnabled ? "none" : "0 2px 4px rgba(0,0,0,0.9)",
                             zIndex: 20,
@@ -1335,14 +1364,14 @@ ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
                           <select
                             value={wordsPerSentence}
                             onChange={(e) => {
-                              const val = parseInt(e.target.value) || 4;
+                              const val = parseInt(e.target.value) || 3;
                               setWordsPerSentence(val);
                               handleApplyFormatting(val, linesPerPart);
                             }}
                             className="w-full bg-[#130D1C] border border-[#2A2036] text-[#F3EFFA] font-sans text-[12.5px] font-semibold p-2 rounded-[10px] outline-none focus:border-[#8B5CF6] cursor-pointer"
                           >
                             <option value={2}>2 words (Short punchy)</option>
-                            <option value={3}>3 words</option>
+                            <option value={3}>3 words (Default / Fast-paced)</option>
                             <option value={4}>4 words (Standard)</option>
                             <option value={6}>6 words (Medium)</option>
                             <option value={8}>8 words (Longer sentence)</option>
@@ -1674,17 +1703,17 @@ ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
                     {/* Format Chips */}
                     {exportType === "subtitle" ? (
                       <div className="flex gap-2.5 flex-wrap">
-                        {["SRT", "VTT", "JSON"].map((fmt) => (
+                        {["SRT", "ASS", "VTT", "JSON"].map((fmt) => (
                           <div
                             key={fmt}
                             onClick={() => setExportFormat(fmt)}
-                            className={`flex-1 min-w-[80px] text-center border-[1.5px] rounded-[11px] py-3.5 px-2 cursor-pointer font-bold text-[13.5px] transition-all ${
+                            className={`flex-1 min-w-[70px] text-center border-[1.5px] rounded-[11px] py-3 px-2 cursor-pointer font-bold text-[13.5px] transition-all ${
                               exportFormat === fmt
                                 ? "border-[#8B5CF6] bg-[rgba(139,92,246,0.14)] text-[#F3EFFA]"
                                 : "border-[#2A2036] bg-[#1B1327] text-[#9086A3] hover:text-[#F3EFFA]"
                             }`}
                           >
-                            .{fmt}
+                            <div>.{fmt}</div>
                           </div>
                         ))}
                       </div>

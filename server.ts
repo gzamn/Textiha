@@ -48,6 +48,67 @@ function getAiClient(userKey?: string): GoogleGenAI {
   });
 }
 
+// Algorithmic Timing Verification & Refinement Function on server
+function serverRefineTimings(rawSegments: any[]): any[] {
+  if (!Array.isArray(rawSegments) || rawSegments.length === 0) return [];
+
+  const sanitized = rawSegments
+    .filter((s) => s && typeof s.text === "string" && s.text.trim().length > 0)
+    .map((s) => {
+      const start = typeof s.start === "number" ? s.start : parseFloat(s.start) || 0;
+      let end = typeof s.end === "number" ? s.end : parseFloat(s.end) || start + 1.5;
+
+      const cleanText = s.text.trim();
+      const wordCount = cleanText.split(/\s+/).filter(Boolean).length;
+
+      // Ensure subtitle duration is comfortable to read (at least ~0.7s or ~0.25s per word)
+      const minDuration = Math.max(0.7, wordCount * 0.25);
+      if (end <= start || end - start < minDuration) {
+        end = start + minDuration;
+      }
+
+      return {
+        start: parseFloat(start.toFixed(2)),
+        end: parseFloat(end.toFixed(2)),
+        text: cleanText,
+        translation: typeof s.translation === "string" ? s.translation : "",
+      };
+    })
+    .sort((a, b) => a.start - b.start);
+
+  const refined: any[] = [];
+  for (let i = 0; i < sanitized.length; i++) {
+    const seg = sanitized[i];
+    if (refined.length > 0) {
+      const prev = refined[refined.length - 1];
+      if (seg.start < prev.end) {
+        // Fix overlap: respect the first word onset of the current segment,
+        // clamp previous segment's end to current segment's start
+        prev.end = seg.start;
+        if (prev.end <= prev.start + 0.3) {
+          prev.end = parseFloat((prev.start + 0.3).toFixed(2));
+          seg.start = prev.end;
+        }
+      } else {
+        // If there is a small gap (<= 0.30s) in continuous speech, extend previous caption to bridge it smoothly
+        const gap = seg.start - prev.end;
+        if (gap > 0 && gap <= 0.30) {
+          prev.end = seg.start;
+        }
+        // If gap > 0.30s (silence / pause), leave it blank as requested
+      }
+    }
+
+    if (seg.end <= seg.start) {
+      seg.end = parseFloat((seg.start + 0.8).toFixed(2));
+    }
+
+    refined.push(seg);
+  }
+
+  return refined;
+}
+
 // Shared transcription processor using Gemini models
 async function processTranscriptionWithGemini(
   activeKey: string,
@@ -61,34 +122,44 @@ async function processTranscriptionWithGemini(
   const systemInstruction = `You are a world-class professional audiovisual transcriber specializing in Algerian Darija (the colloquial Algerian dialect of Arabic).
 Algerian Darija is characterized by spontaneous code-switching between Arabic, French, and English in everyday spoken conversation.
 
-Your job is to transcribe the provided audio/video with SUB-SECOND MILLISECOND PRECISION to generate accurate subtitles (captions).
+Your primary duty is to transcribe the provided audio with HIGH ACCURACY and SUB-SECOND PRECISE TIMESTAMPS (0.01s precision).
 
-CRITICAL TRANSCRIPTION & TIMING RULES:
-1. STRICT VERBATIM — NO TRANSLATION:
-   - Transcribe strictly verbatim as spoken. NEVER translate into Standard Arabic, French, or English.
-2. LINGUISTIC SCRIPT RULE (Franco-Arabic & English Code-Switching):
-   - Algerian Darija words MUST be written in standard ARABIC script (e.g., "اليوم راني", "خاوتي", "واش راك", "بزاف").
-   - French and English words MUST be written in LATIN script (e.g., "l'équipe", "tuto", "magnifique", "weekend", "c'est parti").
-   - Transcribe hybrid sentences naturally (e.g. "سلام l'équipe اليوم راني في Alger centre").
-3. ACCURATE START & END TIMESTAMPS (NO EARLY OR GHOST SUBTITLES):
-   - Subtitle segments MUST ONLY appear at the exact millisecond the speaker begins vocalizing that specific phrase.
-   - If the audio begins with silence, background noise, music, or breathing before speech, DO NOT start the first subtitle at 0.0s! Start it at the exact moment speech sounds begin (e.g. 1.84s).
-   - Subtitle segments MUST DISAPPEAR immediately when the speaker stops talking. Do NOT extend subtitle duration into pauses, silences, or musical transitions.
-   - Do NOT repeat earlier words in subsequent segments unless the speaker actually repeated them out loud.
-4. CONCISE SHORT PHRASES (2 to 5 WORDS PER SEGMENT):
-   - Break speech into concise, fast subtitle segments (duration 1.2s to 3.0s, approx 2 to 5 words). Short subtitle segments guarantee exact synchronization with fast spoken Darija.
+MANDATORY SCRIPT RULE (STRICT ENFORCEMENT):
+1. LATIN SCRIPT FOR ALL FRENCH & ENGLISH WORDS:
+   - Any and all French words, English words, technical terms, loanwords, brand names, and modern expressions MUST be written in Latin script with correct French/English spelling.
+   - NEVER transliterate French or English words into Arabic script (e.g. NEVER write "نورمال", "ميرسي", "بروجي", "فيديو", "ديفلوبور", "ماركتينغ", "ويكاند", "ليكيب", "فوالا", "سي بون").
+   - You MUST write: "normal", "merci", "projet", "vidéo", "développeur", "marketing", "weekend", "l'équipe", "voilà", "c'est bon", "startup", "application", "business", "design", "client", "service", "meeting", "code", "call", "link", etc.
+2. ARABIC SCRIPT FOR ARABIC & DARIJA WORDS:
+   - All pure Arabic and Algerian Darija words, prefixes, verbs, and particles MUST be written in standard Arabic script (e.g., "اليوم راني", "واش راك", "بزاف", "علابالي", "خاوتي", "كاش جديد", "هكذا", "كيما", "حاب", "نروح", "درنا", "شاف").
+3. HYBRID SENTENCE EXAMPLES:
+   - "سلام l'équipe اليوم راني رايح ندير un nouveau projet في web development"
+   - "هذا le problème بزاف simple، غير نديروا update لـ l'application و c'est bon"
+   - "شكراً merci beaucoup خاوتي، نتلاقاو le weekend الجاي إن شاء الله"
+
+CRITICAL TIMING & VERBATIM RULES:
+1. STRICT VERBATIM — NO TRANSLATION OR MODIFICATIONS: Transcribe strictly as spoken.
+2. FIRST LETTER ONSET (START TIMESTAMP):
+   - Concentrate strictly on the very first sound and letter of the first word you transcribe in each sentence/phrase.
+   - Start the caption timestamp (start) right at that exact millisecond.
+   - If there is an introductory pause, background music, or breath, DO NOT start early. Start the caption exactly when vocalization begins.
+3. LAST LETTER OFFSET (END TIMESTAMP):
+   - Focus strictly on the last letter/phoneme of the last word in the phrase.
+   - End the caption timestamp (end) right when vocalization finishes.
+   - Ensure the caption is displayed for the entire duration the phrase is spoken so viewers can read it.
+4. CLEAN SUBTITLE PHRASING:
+   - Segment speech into natural, readable subtitle chunks (averaging 3 to 5 words per segment).
+   - Do NOT produce huge paragraphs in a single segment.
 5. STRICT CHRONOLOGICAL ORDER:
-   - Segments MUST be sorted in strictly ascending chronological order (seg[N].start < seg[N].end <= seg[N+1].start).
-   - Never overlap timestamps.
+   - Segments MUST be sorted in strictly ascending chronological order without overlapping.
 
 Format the response strictly as a JSON array matching the schema.`;
 
-  const userPrompt = `Transcribe this audiovisual file verbatim into timed subtitle segments.
-Ensure each segment starts exactly when speech begins and disappears when speech pauses/stops.
+  const userPrompt = `Transcribe this audiovisual file verbatim into timed subtitle segments with exact onset and offset timestamps.
+Ensure segment start matches the very first sound of the first word, and segment end matches the exact finish of the last word.
 ${languagePrompt ? `Additional user instructions: ${languagePrompt}` : ""}`;
 
   // Priority models for multimodal transcription
-  const modelsToTry = ["gemini-2.5-flash", "gemini-3.7-flash"];
+  const modelsToTry = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-3.7-flash"];
   let lastError: any = null;
 
   for (const modelName of modelsToTry) {
@@ -117,15 +188,15 @@ ${languagePrompt ? `Additional user instructions: ${languagePrompt}` : ""}`;
               properties: {
                 start: {
                   type: Type.NUMBER,
-                  description: "Precise start timestamp in seconds (e.g. 1.45). Must match exact voice onset.",
+                  description: "Precise start timestamp in seconds (e.g. 1.45). Must match exact voice onset of first word.",
                 },
                 end: {
                   type: Type.NUMBER,
-                  description: "Precise end timestamp in seconds (e.g. 3.20). Must match exact voice offset.",
+                  description: "Precise end timestamp in seconds (e.g. 3.20). Must match exact voice offset of last word.",
                 },
                 text: {
                   type: Type.STRING,
-                  description: "Verbatim transcription in hybrid Arabic and Latin script.",
+                  description: "Verbatim subtitle transcription in hybrid Arabic and Latin script (~3-5 words).",
                 },
                 translation: {
                   type: Type.STRING,
@@ -145,23 +216,8 @@ ${languagePrompt ? `Additional user instructions: ${languagePrompt}` : ""}`;
 
       const rawSegments: any[] = JSON.parse(responseText.trim());
 
-      // Clean, validate and sanitize timestamps
-      const sanitized = rawSegments
-        .filter((s) => s && typeof s.text === "string" && s.text.trim().length > 0)
-        .map((s) => {
-          let start = typeof s.start === "number" ? s.start : parseFloat(s.start) || 0;
-          let end = typeof s.end === "number" ? s.end : parseFloat(s.end) || start + 1.5;
-          if (end <= start) end = start + 1.2;
-          return {
-            start: parseFloat(start.toFixed(2)),
-            end: parseFloat(end.toFixed(2)),
-            text: s.text.trim(),
-            translation: "",
-          };
-        })
-        .sort((a, b) => a.start - b.start);
-
-      return sanitized;
+      // Algorithmic verification and alignment pass
+      return serverRefineTimings(rawSegments);
     } catch (err: any) {
       console.warn(`Attempt with ${modelName} encountered error:`, err?.message || err);
       lastError = err;

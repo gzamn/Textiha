@@ -3,18 +3,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+export interface SubtitleWord {
+  word: string;
+  start: number; // in seconds (precision to 0.01s)
+  end: number;   // in seconds (precision to 0.01s)
+}
+
 export interface SubtitleSegment {
   id: string;
   start: number; // in seconds
   end: number;   // in seconds
-  text: string;  // original transcript (Darija + French + English)
+  text: string;  // original transcript (Darija in Arabic, French/English in Latin)
   translation: string; // translated text
+  words?: SubtitleWord[]; // Optional legacy word data
 }
 
 export type TextTransformType = 'none' | 'uppercase' | 'lowercase';
 export type PositionYType = 'top' | 'bottom' | 'center';
 export type DirectionType = 'ltr' | 'rtl';
 export type TextAlignType = 'left' | 'center' | 'right';
+export type WordHighlightStyleType = 'glow' | 'pill' | 'scale' | 'underline';
 
 export interface SubtitleStyle {
   fontFamily: string;
@@ -34,8 +42,14 @@ export interface SubtitleStyle {
   paddingY: number;
   direction: DirectionType;
   textAlign: TextAlignType;
-  maxWordsPerSegment: number; // e.g., 4 (or 0 for automatic)
+  maxWordsPerSegment: number; // e.g., 3
   maxLinesPerSegment: number; // 1, 2, or 3 lines
+  // Optional legacy highlight settings for backward compatibility
+  wordHighlightEnabled?: boolean;
+  wordHighlightColor?: string;
+  wordHighlightBgColor?: string;
+  wordHighlightStyle?: WordHighlightStyleType;
+  inactiveWordOpacity?: number;
 }
 
 export const DEFAULT_STYLE: SubtitleStyle = {
@@ -56,9 +70,20 @@ export const DEFAULT_STYLE: SubtitleStyle = {
   paddingY: 8,
   direction: 'rtl',
   textAlign: 'center',
-  maxWordsPerSegment: 4,
+  maxWordsPerSegment: 3,
   maxLinesPerSegment: 1,
+  wordHighlightEnabled: false,
 };
+
+export const AVAILABLE_HIGHLIGHT_COLORS = [
+  { name: 'Electric Yellow', value: '#FACC15' },
+  { name: 'Neon Sky Blue', value: '#38BDF8' },
+  { name: 'Lime Green', value: '#4ADE80' },
+  { name: 'Hot Coral', value: '#FB7185' },
+  { name: 'Vibrant Violet', value: '#C084FC' },
+  { name: 'Sunset Amber', value: '#FB923C' },
+  { name: 'Pure White', value: '#FFFFFF' },
+];
 
 export const AVAILABLE_FONTS = [
   { name: 'Cairo', value: "'Cairo', sans-serif" },

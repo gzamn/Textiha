@@ -5,6 +5,7 @@
 
 import React, { useState } from "react";
 import { SubtitleSegment } from "../types";
+import { verifyAndRefineTimings } from "../utils";
 import {
   Plus,
   Trash2,
@@ -19,6 +20,7 @@ import {
   FastForward,
   Rewind,
   Edit3,
+  Wand2,
 } from "lucide-react";
 
 interface DynamicSubtitleEditorProps {
@@ -43,6 +45,7 @@ export function DynamicSubtitleEditor({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showBatchShift, setShowBatchShift] = useState(false);
   const [shiftSeconds, setShiftSeconds] = useState(0.25);
+  const [verifiedFeedback, setVerifiedFeedback] = useState(false);
 
   // Update specific field of segment
   const updateSegment = (id: string, field: keyof SubtitleSegment, val: any) => {
@@ -53,6 +56,14 @@ export function DynamicSubtitleEditor({
       return seg;
     });
     onChangeSegments(updated);
+  };
+
+  // Run Timing Polish & Gap-Bridging Algorithm
+  const handlePolishTimings = () => {
+    const refined = verifyAndRefineTimings(segments, { bridgeMicroGaps: true, maxBridgeSeconds: 0.30 });
+    onChangeSegments(refined);
+    setVerifiedFeedback(true);
+    setTimeout(() => setVerifiedFeedback(false), 2500);
   };
 
   // Nudge timing
@@ -138,6 +149,21 @@ export function DynamicSubtitleEditor({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Timing Polish Pass Button */}
+          <button
+            type="button"
+            onClick={handlePolishTimings}
+            className={`px-3 py-1.5 rounded-[9px] border font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-sm ${
+              verifiedFeedback
+                ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-300"
+                : "bg-[#1B1327] hover:bg-[#2A2036] border-[#3E2856] text-[#34D399] hover:text-[#6EE7B7]"
+            }`}
+            title="Clean timing: anchors onset to speech start, removes overlaps, and bridges micro-gaps cleanly"
+          >
+            {verifiedFeedback ? <Check className="w-3.5 h-3.5" /> : <Wand2 className="w-3.5 h-3.5" />}
+            <span>{verifiedFeedback ? "Timings Polished & Aligned!" : "Polish & Align Timings"}</span>
+          </button>
+
           {/* Format chunks button */}
           <button
             type="button"

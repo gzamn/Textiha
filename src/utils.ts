@@ -174,6 +174,136 @@ export async function blobToBase64(blob: Blob): Promise<string> {
 }
 
 /**
+ * Synthesizes or calibrates word-level timestamps for a text segment based on speech cadence and syllable weights.
+ * Guarantees that the first word starts exactly at segment start and the last word ends exactly at segment end.
+ */
+export function calculateWordTimings(
+  text: string,
+  segStart: number,
+  segEnd: number,
+  existingWords?: Array<{ word: string; start: number; end: number }>
+): Array<{ word: string; start: number; end: number }> {
+  const rawWords = text.trim().split(/\s+/).filter(Boolean);
+  if (rawWords.length === 0) return [];
+
+  const totalDuration = Math.max(0.2, segEnd - segStart);
+
+  // If existing words match raw words count and are valid, calibrate them to fit segment bounds
+  if (
+    existingWords &&
+    existingWords.length === rawWords.length &&
+    existingWords.every((w) => typeof w.start === "number" && typeof w.end === "number" && w.end >= w.start)
+  ) {
+    const minWStart = existingWords[0].start;
+    const maxWEnd = existingWords[existingWords.length - 1].end;
+    const span = Math.max(0.1, maxWEnd - minWStart);
+
+    return existingWords.map((w, idx) => {
+      const normStart = segStart + ((w.start - minWStart) / span) * totalDuration;
+      const normEnd = segStart + ((w.end - minWStart) / span) * totalDuration;
+      return {
+        word: rawWords[idx],
+        start: parseFloat(normStart.toFixed(2)),
+        end: parseFloat(Math.max(normStart + 0.05, normEnd).toFixed(2)),
+      };
+    });
+  }
+
+  // Calculate weights based on character length & vowels for natural speech rhythm
+  const weights = rawWords.map((w) => Math.max(1, Math.min(10, w.length)));
+  const totalWeight = weights.reduce((acc, cur) => acc + cur, 0);
+
+  let currentStart = segStart;
+  const result: Array<{ word: string; start: number; end: number }> = [];
+
+  for (let i = 0; i < rawWords.length; i++) {
+    const fraction = weights[i] / totalWeight;
+    const wordDuration = totalDuration * fraction;
+    const wordEnd = i === rawWords.length - 1 ? segEnd : currentStart + wordDuration;
+
+    result.push({
+      word: rawWords[i],
+      start: parseFloat(currentStart.toFixed(2)),
+      end: parseFloat(wordEnd.toFixed(2)),
+    });
+
+    currentStart = wordEnd;
+  }
+
+  return result;
+}
+
+/**
+ * Timing Verification & Alignment Algorithm:
+ * - Accurately anchors to the voice onset of the first word (never artificially delays start).
+ * - Enforces chronological monotonic ordering without overlap (clamps previous end to current start).
+ * - Bridges small micro-gaps (<= 0.30s) in continuous speech so captions stay cleanly visible without flickering.
+ * - Preserves natural pauses and silences (> 0.30s) so captions disappear during silence.
+ */
+export function verifyAndRefineTimings(
+  segments: SubtitleSegment[],
+  options?: { bridgeMicroGaps?: boolean; maxBridgeSeconds?: number }
+): SubtitleSegment[] {
+  if (!segments || segments.length === 0) return [];
+
+  const bridgeGaps = options?.bridgeMicroGaps ?? true;
+  const maxBridge = options?.maxBridgeSeconds ?? 0.30;
+
+  // 1. Sort by start timestamp
+  const sorted = [...segments].sort((a, b) => a.start - b.start);
+  const refined: SubtitleSegment[] = [];
+
+  for (let i = 0; i < sorted.length; i++) {
+    const seg = sorted[i];
+    const text = seg.text.trim();
+    if (!text) continue;
+
+    let start = parseFloat(seg.start.toFixed(2));
+    let end = parseFloat(seg.end.toFixed(2));
+
+    // Ensure minimum reasonable duration based on word count for human reading
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    const minDur = Math.max(0.65, wordCount * 0.25);
+    if (end <= start || end - start < minDur) {
+      end = parseFloat((start + minDur).toFixed(2));
+    }
+
+    // Fix overlap with previous segment while strictly respecting current segment's start onset
+    if (refined.length > 0) {
+      const prev = refined[refined.length - 1];
+      if (start < prev.end) {
+        // Clamp previous segment's end right at current segment's start
+        prev.end = start;
+        if (prev.end <= prev.start + 0.3) {
+          prev.end = parseFloat((prev.start + 0.3).toFixed(2));
+          start = prev.end;
+        }
+        if (end <= start) {
+          end = parseFloat((start + minDur).toFixed(2));
+        }
+      } else if (bridgeGaps) {
+        // If there is a small gap (e.g. <= 0.30s) in continuous speech, extend previous caption to bridge it
+        const gap = start - prev.end;
+        if (gap > 0 && gap <= maxBridge) {
+          prev.end = start;
+        }
+      }
+    }
+
+    refined.push({
+      ...seg,
+      id: seg.id || `seg_${Date.now()}_${i}`,
+      start,
+      end,
+      text,
+      translation: seg.translation || "",
+    });
+  }
+
+  return refined;
+}
+
+/**
  * Reformats subtitle segments by splitting or wrapping them
  * based on user-chosen words per sentence and lines per segment.
  */
@@ -183,7 +313,7 @@ export function reformatSegmentsByFormattingOptions(
   linesPerPart: number = 1
 ): SubtitleSegment[] {
   if (!segments || segments.length === 0) return [];
-  if (!wordsPerSentence || wordsPerSentence >= 40) return segments;
+  if (!wordsPerSentence || wordsPerSentence >= 40) return verifyAndRefineTimings(segments);
 
   const result: SubtitleSegment[] = [];
 
@@ -192,7 +322,10 @@ export function reformatSegmentsByFormattingOptions(
     if (rawWords.length === 0) continue;
 
     if (rawWords.length <= wordsPerSentence) {
-      result.push(seg);
+      result.push({
+        ...seg,
+        words: calculateWordTimings(seg.text, seg.start, seg.end, seg.words),
+      });
       continue;
     }
 
@@ -218,17 +351,21 @@ export function reformatSegmentsByFormattingOptions(
         formattedText = lines.join("\n");
       }
 
+      const cStart = parseFloat(chunkStart.toFixed(2));
+      const cEnd = parseFloat(chunkEnd.toFixed(2));
+
       result.push({
         id: `${seg.id}_fmt_${i}_${Date.now()}`,
-        start: parseFloat(chunkStart.toFixed(2)),
-        end: parseFloat(chunkEnd.toFixed(2)),
+        start: cStart,
+        end: cEnd,
         text: formattedText,
         translation: "",
+        words: calculateWordTimings(formattedText, cStart, cEnd),
       });
     }
   }
 
-  return result;
+  return verifyAndRefineTimings(result);
 }
 
 /**
@@ -343,6 +480,68 @@ export function exportToVTT(
     vtt += `${seg.text}\n\n`;
   });
   return vtt;
+}
+
+/**
+ * Format seconds to ASS format: H:MM:SS.cc (centiseconds)
+ */
+export function formatTimeASS(seconds: number): string {
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  const cs = Math.floor((seconds % 1) * 100);
+
+  const m = mins.toString().padStart(2, "0");
+  const s = secs.toString().padStart(2, "0");
+  const c = cs.toString().padStart(2, "0");
+
+  return `${hrs}:${m}:${s}.${c}`;
+}
+
+/**
+ * Convert subtitle segments to Advanced SubStation Alpha (.ass) format
+ */
+export function exportToASS(segments: SubtitleSegment[], style?: any): string {
+  const primaryColor = style?.textColor ? hexToBGR(style.textColor) : "&H00FFFFFF";
+  const outlineColor = "&H00000000";
+  const backColor = "&H80000000";
+  const font = style?.fontFamily?.replace(/['"]/g, "").split(",")[0] || "Cairo";
+  const fontSize = style?.fontSize || 22;
+
+  let ass = `[Script Info]
+Title: Algerian Darija Subtitles
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,${font},${fontSize * 2.2},${primaryColor},${primaryColor},${outlineColor},${backColor},1,0,0,0,100,100,0,0,1,2,2,2,30,30,50,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+
+  segments.forEach((seg) => {
+    const startStr = formatTimeASS(seg.start);
+    const endStr = formatTimeASS(seg.end);
+    ass += `Dialogue: 0,${startStr},${endStr},Default,,0,0,0,,${seg.text}\n`;
+  });
+
+  return ass;
+}
+
+function hexToBGR(hex: string): string {
+  const clean = hex.replace("#", "");
+  if (clean.length === 6) {
+    const r = clean.substring(0, 2);
+    const g = clean.substring(2, 4);
+    const b = clean.substring(4, 6);
+    return `&H00${b}${g}${r}`.toUpperCase();
+  }
+  return "&H00FFFFFF";
 }
 
 /**

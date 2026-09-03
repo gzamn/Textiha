@@ -13,7 +13,7 @@ import {
   PositionYType,
   DirectionType,
 } from "../types";
-import { Sliders, Type, Palette, Layout, Sparkles, AlignRight } from "lucide-react";
+import { Sliders, Type, Palette, Layout, AlignRight } from "lucide-react";
 
 interface SubtitleStylePanelProps {
   style: SubtitleStyle;
@@ -256,7 +256,7 @@ export default function SubtitleStylePanel({
       {/* 4. Display Position */}
       <div className="space-y-3 pt-2">
         <h3 className="text-xs font-bold text-purple-300/80 uppercase tracking-wider flex items-center gap-1.5">
-          <Sparkles className="w-3.5 h-3.5 text-purple-400" /> Vertical Position
+          <Layout className="w-3.5 h-3.5 text-purple-400" /> Vertical Position
         </h3>
         <div className="grid grid-cols-3 gap-2" id="position-y-selector">
           {(["top", "center", "bottom"] as PositionYType[]).map((pos) => (
@@ -277,7 +277,7 @@ export default function SubtitleStylePanel({
         </div>
       </div>
 
-      {/* 5. Text Direction */}
+      {/* 6. Text Direction */}
       <div className="space-y-3 pt-2">
         <h3 className="text-xs font-bold text-purple-300/80 uppercase tracking-wider flex items-center gap-1.5">
           <AlignRight className="w-3.5 h-3.5 text-purple-400" /> Text Direction
