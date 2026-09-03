@@ -8,6 +8,12 @@ import path from "path";
 import multer from "multer";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import fs from "fs";
+import os from "os";
+
+const execFileAsync = promisify(execFile);
 
 dotenv.config();
 
@@ -237,6 +243,167 @@ ${languagePrompt ? `Additional user instructions: ${languagePrompt}` : ""}`;
   throw lastError || new Error("Failed to process audio with Gemini.");
 }
 
+/**
+ * Measure exact media duration in seconds using ffprobe.
+ */
+async function getMediaDuration(filePath: string): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      filePath,
+    ]);
+    const duration = parseFloat(stdout.trim());
+    return isNaN(duration) ? 0 : duration;
+  } catch (err) {
+    console.warn("ffprobe duration detection warning:", err);
+    return 0;
+  }
+}
+
+/**
+ * Requirement: When the file exceeds 30 seconds, always divide the file into 15 seconds chunks,
+ * transcribe each chunk individually in the backend, then rebuild them and present them to the user as the final piece.
+ */
+async function divideAndTranscribeAudio(
+  activeKey: string,
+  buffer: Buffer,
+  mimeType: string,
+  languagePrompt: string
+): Promise<{ segments: any[]; chunked: boolean; totalChunks: number; duration: number }> {
+  const tempDir = os.tmpdir();
+  const tempId = `transcribe_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const ext = mimeType.includes("wav")
+    ? "wav"
+    : mimeType.includes("mp3")
+    ? "mp3"
+    : mimeType.includes("webm")
+    ? "webm"
+    : "tmp";
+  const tempInputPath = path.join(tempDir, `${tempId}_input.${ext}`);
+
+  try {
+    await fs.promises.writeFile(tempInputPath, buffer);
+    const duration = await getMediaDuration(tempInputPath);
+    console.log(`[Backend Intake] Detected media duration: ${duration.toFixed(2)}s`);
+
+    // When the file exceeds 30 seconds, always divide into 15 seconds chunks
+    if (duration > 30) {
+      const CHUNK_DURATION = 15; // 15 seconds chunks
+      const totalChunks = Math.ceil(duration / CHUNK_DURATION);
+      console.log(
+        `[Backend Chunking] Audio exceeds 30s (${duration.toFixed(2)}s). Dividing into ${totalChunks} chunks of ${CHUNK_DURATION}s each...`
+      );
+
+      const allRawSegments: any[] = [];
+
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkStart = i * CHUNK_DURATION;
+        const chunkLen = Math.min(CHUNK_DURATION, duration - chunkStart);
+        if (chunkLen <= 0.2) continue;
+
+        const chunkFilePath = path.join(tempDir, `${tempId}_chunk_${i}.wav`);
+        try {
+          // Extract 15s chunk to standard 16kHz mono WAV for high-accuracy speech recognition
+          await execFileAsync("ffmpeg", [
+            "-y",
+            "-ss",
+            chunkStart.toString(),
+            "-i",
+            tempInputPath,
+            "-t",
+            chunkLen.toString(),
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            chunkFilePath,
+          ]);
+
+          const chunkBuffer = await fs.promises.readFile(chunkFilePath);
+          console.log(
+            `[Backend Chunking] Transcribing chunk ${i + 1}/${totalChunks} (${chunkStart.toFixed(1)}s - ${(
+              chunkStart + chunkLen
+            ).toFixed(1)}s)...`
+          );
+
+          // Transcribe each chunk individually in the backend
+          const chunkSegments = await processTranscriptionWithGemini(
+            activeKey,
+            chunkBuffer,
+            "audio/wav",
+            languagePrompt
+          );
+
+          // Offset segment timestamps by the chunk's start time
+          for (const seg of chunkSegments) {
+            const shiftedStart = parseFloat((seg.start + chunkStart).toFixed(2));
+            const shiftedEnd = parseFloat((seg.end + chunkStart).toFixed(2));
+            allRawSegments.push({
+              ...seg,
+              start: shiftedStart,
+              end: shiftedEnd,
+            });
+          }
+        } catch (chunkErr) {
+          console.warn(`[Backend Chunking] Error transcribing chunk ${i + 1}:`, chunkErr);
+        } finally {
+          fs.promises.unlink(chunkFilePath).catch(() => {});
+        }
+      }
+
+      // Rebuild all chunks into the final piece
+      console.log(
+        `[Backend Chunking] Rebuilding ${allRawSegments.length} segments from ${totalChunks} chunks into final piece...`
+      );
+      const rebuiltSegments = serverRefineTimings(allRawSegments);
+      return {
+        segments: rebuiltSegments,
+        chunked: true,
+        totalChunks,
+        duration,
+      };
+    }
+
+    // Audio is <= 30 seconds: transcribe directly as a single piece
+    const segments = await processTranscriptionWithGemini(
+      activeKey,
+      buffer,
+      mimeType,
+      languagePrompt
+    );
+    return {
+      segments,
+      chunked: false,
+      totalChunks: 1,
+      duration,
+    };
+  } catch (err) {
+    console.warn("divideAndTranscribeAudio error, falling back to direct transcription:", err);
+    const segments = await processTranscriptionWithGemini(
+      activeKey,
+      buffer,
+      mimeType,
+      languagePrompt
+    );
+    return {
+      segments,
+      chunked: false,
+      totalChunks: 1,
+      duration: 0,
+    };
+  } finally {
+    fs.promises.unlink(tempInputPath).catch(() => {});
+  }
+}
+
 // Global CORS handling for Vercel, previews, and custom domains
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
@@ -338,14 +505,29 @@ app.post(["/api/transcribe", "/transcribe"], upload.single("audio"), async (req,
 
     const languagePrompt = req.body?.prompt || "";
 
-    const segments = await processTranscriptionWithGemini(
+    const result = await divideAndTranscribeAudio(
       activeKey,
       buffer,
       mimeType,
       languagePrompt
     );
 
-    return res.json({ segments });
+    let finalSegments = result.segments;
+    const chunkOffset = parseFloat(req.body?.chunkOffset) || 0;
+    if (chunkOffset > 0 && Array.isArray(finalSegments)) {
+      finalSegments = finalSegments.map((s) => ({
+        ...s,
+        start: parseFloat((s.start + chunkOffset).toFixed(2)),
+        end: parseFloat((s.end + chunkOffset).toFixed(2)),
+      }));
+    }
+
+    return res.json({
+      segments: finalSegments,
+      chunked: result.chunked,
+      totalChunks: result.totalChunks,
+      duration: result.duration,
+    });
   } catch (error: any) {
     console.error("Transcription error:", error);
     const msg = error?.message || "Failed to transcribe audio.";
@@ -411,9 +593,9 @@ app.post(["/api/transcribe-bunny", "/transcribe-bunny"], async (req, res) => {
     const arrayBuffer = await fileResponse.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Process transcription with Gemini
+    // Process transcription with Gemini (auto-chunks if > 30s)
     const resolvedMime = mimeType || "audio/mp3";
-    const segments = await processTranscriptionWithGemini(
+    const result = await divideAndTranscribeAudio(
       activeKey,
       buffer,
       resolvedMime,
@@ -430,7 +612,12 @@ app.post(["/api/transcribe-bunny", "/transcribe-bunny"], async (req, res) => {
       console.warn("Could not delete temp file from Bunny CDN:", delErr);
     });
 
-    return res.json({ segments });
+    return res.json({
+      segments: result.segments,
+      chunked: result.chunked,
+      totalChunks: result.totalChunks,
+      duration: result.duration,
+    });
   } catch (error: any) {
     console.error("Bunny CDN transcription error:", error);
 

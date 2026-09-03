@@ -14,6 +14,8 @@ import {
   reformatSegmentsByFormattingOptions,
   verifyAndRefineTimings,
   extractAndOptimizeAudio,
+  prepareAudioWith15sChunking,
+  rebuildChunkedSegments,
   blobToBase64,
   SAMPLE_PROJECTS,
 } from "./utils";
@@ -68,6 +70,89 @@ function hexToRgba(hex: string, alpha: number): string {
   const g = parseInt(cleanHex.substring(2, 4), 16) || 0;
   const b = parseInt(cleanHex.substring(4, 6), 16) || 0;
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+async function directTranscribeWithGemini(
+  activeKey: string,
+  base64Audio: string,
+  mimeType: string,
+  customPrompt: string
+): Promise<any[]> {
+  const systemInstruction = `You are a world-class professional audiovisual transcriber specializing in Algerian Darija (الدارجة الجزائرية).
+Your task is to transcribe the provided audio/video into precise timed subtitle segments with STRICT SCRIPT ENFORCEMENT.
+
+MANDATORY SCRIPT RULES:
+1. LATIN SCRIPT FOR ALL FRENCH & ENGLISH WORDS:
+   - Any French or English words, brand names, slang, technology terms, or loanwords MUST be written strictly in Latin letters with proper spelling (e.g. 'normal', 'merci', 'projet', 'c'est bon', 'voilà', 'l\'équipe', 'weekend', 'application', 'business', 'design', 'service', 'meeting', 'cool', 'top', 'vidéo', 'photo', 'story').
+   - NEVER transliterate French/English words into Arabic script (e.g. do NOT write 'نورمال', 'ميرسي', 'بروجي', 'سي بون', 'فوالا', 'فيديو').
+2. ARABIC SCRIPT FOR ARABIC & DARIJA WORDS:
+   - All Algerian Darija and Arabic dialect vocabulary, grammar particles, and verbs MUST be written in Arabic script (e.g. واش راك, صحا, علابالي, بزاف, كاش جديد, اليوم راني, خاوتي, حاب, نروحوا).
+3. EXAMPLES:
+   - "سلام l'équipe اليوم راني رايح ندير un nouveau projet في web development"
+   - "هذا le problème بزاف simple، غير نديروا update لـ l'application و c'est bon"
+
+CRITICAL TIMING & ACCURACY:
+- START ONSET: Concentrate strictly on the very first sound/letter of the first word you transcribe in each sentence and anchor 'start' right at that exact millisecond.
+- END OFFSET: Focus on the last letter of the last word of the phrase to keep the caption visible throughout vocalization.
+- SILENCES: If there are silences or pauses between sentences, leave them blank so subtitles disappear cleanly during silence.
+- LENGTH: Break speech into short, readable subtitle segments averaging 3 words (2 to 4 words per segment).
+- Output format: Return ONLY a valid JSON array of objects with keys "start", "end", "text", "translation".
+${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
+
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+    activeKey
+  )}`;
+
+  const directRes = await fetch(geminiUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: systemInstruction }],
+      },
+      contents: [
+        {
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: base64Audio,
+              },
+            },
+            {
+              text: `Transcribe all spoken phrases in Algerian Darija into timed subtitle segments (strictly 3 words per subtitle part by default). Return a JSON array where each object has:
+- start (number, start time in seconds)
+- end (number, end time in seconds)
+- text (verbatim Algerian Darija transcription, ~3 words per part)
+- translation ("")`,
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+
+  const directJson = await directRes.json();
+  if (!directRes.ok) {
+    throw new Error(
+      directJson?.error?.message ||
+        `Google Gemini API error (${directRes.status}). Please check your API key.`
+    );
+  }
+
+  const rawTextContent = directJson?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!rawTextContent) {
+    throw new Error("No transcription received from Gemini API.");
+  }
+
+  try {
+    return JSON.parse(rawTextContent.trim());
+  } catch {
+    throw new Error("Failed to parse transcription response format.");
+  }
 }
 
 export default function App() {
@@ -354,159 +439,173 @@ export default function App() {
     try {
       let transcriptionData: any = null;
 
-      // 1. Extract and optimize audio track client-side
-      // Converts 10MB-500MB videos down to compact < 2MB voice WAV streams
-      // completely eliminating Vercel's 4.5MB request limit (HTTP 413) and avoiding heavy upload delays
-      const { file: uploadFile, isExtracted, originalSize, optimizedSize } =
-        await extractAndOptimizeAudio(audioFile, (status) => setTranscribingStatus(status));
+      // Prepare audio with automatic 15-second chunking for files exceeding 30 seconds
+      // Requirement: When the file exceeds 30 seconds, always divide the file into 15 seconds chunks,
+      // transcribe each chunk individually in the backend, then rebuild them and present them to the user as the final piece.
+      const prepResult = await prepareAudioWith15sChunking(audioFile, (status) =>
+        setTranscribingStatus(status)
+      );
 
-      if (isExtracted) {
-        console.log(
-          `Extracted audio from ${Math.round(originalSize / 1024)} KB to ${Math.round(optimizedSize / 1024)} KB`
+      if (prepResult.exceeds30s && prepResult.chunks.length > 0) {
+        setUploadProgress(100);
+        setTranscriptionPhase("transcribing");
+        setTranscriptionProgress(10);
+        setTranscribingStatus(
+          `Audio exceeds 30s (${prepResult.duration.toFixed(0)}s). Divided into ${prepResult.totalChunks} chunks of 15 seconds.`
         );
-      }
 
-      setTranscribingStatus("Encoding audio stream...");
-      const base64Audio = await blobToBase64(uploadFile);
+        const chunkResults: { chunkIndex: number; startSec: number; segments: any[] }[] = [];
+        const totalChunks = prepResult.chunks.length;
 
-      setUploadProgress(100);
-      setTranscriptionPhase("transcribing");
-      setTranscriptionProgress(10);
-      setTranscribingStatus("Transcribing Algerian Darija with Gemini AI...");
-
-      let currentProg = 10;
-      let msgIndex = 1;
-      progressTimer.current = setInterval(() => {
-        currentProg += Math.floor(Math.random() * 4) + 2;
-        if (currentProg > 94) {
-          currentProg = 94;
-        }
-        setTranscriptionProgress(currentProg);
-
-        if (currentProg % 15 === 0 && msgIndex < STATUS_MESSAGES.length) {
-          setTranscribingStatus(STATUS_MESSAGES[msgIndex]);
-          msgIndex++;
-        }
-      }, 450);
-
-      // Perform fast, reliable request to /api/transcribe with direct Gemini fallback
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      if (geminiApiKey.trim()) {
-        headers["x-gemini-api-key"] = geminiApiKey.trim();
-      }
-
-      let resData: any = null;
-      try {
-        const res = await fetch("/api/transcribe", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            audioBase64: base64Audio,
-            mimeType: uploadFile.type || "audio/wav",
-            prompt: customPrompt,
-            geminiApiKey: geminiApiKey.trim(),
-          }),
-        });
-
-        const rawText = await res.text();
-        try {
-          resData = JSON.parse(rawText);
-        } catch {}
-
-        if (!res.ok || !resData?.segments || !Array.isArray(resData.segments)) {
-          throw new Error(resData?.error || `Server returned error ${res.status}`);
-        }
-        transcriptionData = resData;
-      } catch (serverErr: any) {
-        console.warn("Backend transcription endpoint error, trying direct Gemini API with personal key:", serverErr);
-
-        const activeKey = geminiApiKey.trim();
-        if (!activeKey) {
-          throw new Error(
-            serverErr.message?.includes("API key") || serverErr.message?.includes("quota")
-              ? serverErr.message
-              : "Server error occurred. Please click 'API Key' in the top bar to connect your Gemini API key."
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = prepResult.chunks[i];
+          const chunkPct = Math.round((i / totalChunks) * 85) + 10;
+          setTranscriptionProgress(chunkPct);
+          setTranscribingStatus(
+            `Transcribing chunk ${i + 1} of ${totalChunks} (${chunk.startSec.toFixed(0)}s - ${chunk.endSec.toFixed(0)}s) in backend...`
           );
+
+          const base64Chunk = await blobToBase64(chunk.file);
+
+          let chunkSegments: any[] = [];
+          try {
+            const headers: Record<string, string> = {
+              "Content-Type": "application/json",
+            };
+            if (geminiApiKey.trim()) {
+              headers["x-gemini-api-key"] = geminiApiKey.trim();
+            }
+
+            const res = await fetch("/api/transcribe", {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                audioBase64: base64Chunk,
+                mimeType: "audio/wav",
+                prompt: customPrompt,
+                geminiApiKey: geminiApiKey.trim(),
+                chunkOffset: chunk.startSec,
+                chunkIndex: i,
+                totalChunks,
+              }),
+            });
+
+            const rawText = await res.text();
+            let resData: any = null;
+            try {
+              resData = JSON.parse(rawText);
+            } catch {}
+
+            if (!res.ok || !resData?.segments || !Array.isArray(resData.segments)) {
+              throw new Error(resData?.error || `Server returned error ${res.status}`);
+            }
+            chunkSegments = resData.segments;
+          } catch (chunkErr: any) {
+            console.warn(
+              `Backend chunk ${i + 1} failed, trying direct Gemini fallback:`,
+              chunkErr
+            );
+            const activeKey = geminiApiKey.trim();
+            if (!activeKey) {
+              throw new Error(chunkErr.message || "Failed to transcribe audio chunk.");
+            }
+            chunkSegments = await directTranscribeWithGemini(
+              activeKey,
+              base64Chunk,
+              "audio/wav",
+              customPrompt
+            );
+          }
+
+          chunkResults.push({
+            chunkIndex: i,
+            startSec: chunk.startSec,
+            segments: chunkSegments,
+          });
         }
 
-        // Direct Google Generative Language API call
-        const systemInstruction = `You are a world-class professional audiovisual transcriber specializing in Algerian Darija (الدارجة الجزائرية).
-Your task is to transcribe the provided audio/video into precise timed subtitle segments with STRICT SCRIPT ENFORCEMENT.
+        setTranscribingStatus("Rebuilding 15-second chunks into final subtitle piece...");
+        setTranscriptionProgress(96);
+        const rebuilt = rebuildChunkedSegments(chunkResults);
+        transcriptionData = { segments: rebuilt };
+      } else {
+        // Audio is <= 30 seconds: transcribe directly as a single piece
+        const uploadFile = prepResult.singleFile || audioFile;
+        setTranscribingStatus("Encoding audio stream...");
+        const base64Audio = await blobToBase64(uploadFile);
 
-MANDATORY SCRIPT RULES:
-1. LATIN SCRIPT FOR ALL FRENCH & ENGLISH WORDS:
-   - Any French or English words, brand names, slang, technology terms, or loanwords MUST be written strictly in Latin letters with proper spelling (e.g. 'normal', 'merci', 'projet', 'c'est bon', 'voilà', 'l\'équipe', 'weekend', 'application', 'business', 'design', 'service', 'meeting', 'cool', 'top', 'vidéo', 'photo', 'story').
-   - NEVER transliterate French/English words into Arabic script (e.g. do NOT write 'نورمال', 'ميرسي', 'بروجي', 'سي بون', 'فوالا', 'فيديو').
-2. ARABIC SCRIPT FOR ARABIC & DARIJA WORDS:
-   - All Algerian Darija and Arabic dialect vocabulary, grammar particles, and verbs MUST be written in Arabic script (e.g. واش راك, صحا, علابالي, بزاف, كاش جديد, اليوم راني, خاوتي, حاب, نروحوا).
-3. EXAMPLES:
-   - "سلام l'équipe اليوم راني رايح ندير un nouveau projet في web development"
-   - "هذا le problème بزاف simple، غير نديروا update لـ l'application و c'est bon"
+        setUploadProgress(100);
+        setTranscriptionPhase("transcribing");
+        setTranscriptionProgress(10);
+        setTranscribingStatus("Transcribing Algerian Darija with Gemini AI in backend...");
 
-CRITICAL TIMING & ACCURACY:
-- START ONSET: Concentrate strictly on the very first sound/letter of the first word you transcribe in each sentence and anchor 'start' right at that exact millisecond.
-- END OFFSET: Focus on the last letter of the last word of the phrase to keep the caption visible throughout vocalization.
-- SILENCES: If there are silences or pauses between sentences, leave them blank so subtitles disappear cleanly during silence.
-- LENGTH: Break speech into short, readable subtitle segments averaging 3 words (2 to 4 words per segment).
-- Output format: Return ONLY a valid JSON array of objects with keys "start", "end", "text", "translation".
-${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
+        let currentProg = 10;
+        let msgIndex = 1;
+        progressTimer.current = setInterval(() => {
+          currentProg += Math.floor(Math.random() * 4) + 2;
+          if (currentProg > 94) {
+            currentProg = 94;
+          }
+          setTranscriptionProgress(currentProg);
 
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(activeKey)}`;
+          if (currentProg % 15 === 0 && msgIndex < STATUS_MESSAGES.length) {
+            setTranscribingStatus(STATUS_MESSAGES[msgIndex]);
+            msgIndex++;
+          }
+        }, 450);
 
-        const directRes = await fetch(geminiUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: systemInstruction }],
-            },
-            contents: [
-              {
-                parts: [
-                  {
-                    inlineData: {
-                      mimeType: uploadFile.type || "audio/wav",
-                      data: base64Audio,
-                    },
-                  },
-                  {
-                    text: `Transcribe all spoken phrases in Algerian Darija into timed subtitle segments (strictly 3 words per subtitle part by default). Return a JSON array where each object has:
-- start (number, start time in seconds)
-- end (number, end time in seconds)
-- text (verbatim Algerian Darija transcription, ~3 words per part)
-- translation ("")`,
-                  },
-                ],
-              },
-            ],
-            generationConfig: {
-              responseMimeType: "application/json",
-            },
-          }),
-        });
-
-        const directJson = await directRes.json();
-        if (!directRes.ok) {
-          throw new Error(
-            directJson?.error?.message ||
-              `Google Gemini API error (${directRes.status}). Please check your API key.`
-          );
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (geminiApiKey.trim()) {
+          headers["x-gemini-api-key"] = geminiApiKey.trim();
         }
 
-        const rawTextContent = directJson?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!rawTextContent) {
-          throw new Error("No transcription received from Gemini API.");
-        }
-
-        let parsedList: any[] = [];
+        let resData: any = null;
         try {
-          parsedList = JSON.parse(rawTextContent.trim());
-        } catch {
-          throw new Error("Failed to parse transcription response format.");
+          const res = await fetch("/api/transcribe", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              audioBase64: base64Audio,
+              mimeType: uploadFile.type || "audio/wav",
+              prompt: customPrompt,
+              geminiApiKey: geminiApiKey.trim(),
+            }),
+          });
+
+          const rawText = await res.text();
+          try {
+            resData = JSON.parse(rawText);
+          } catch {}
+
+          if (!res.ok || !resData?.segments || !Array.isArray(resData.segments)) {
+            throw new Error(resData?.error || `Server returned error ${res.status}`);
+          }
+          transcriptionData = resData;
+        } catch (serverErr: any) {
+          console.warn(
+            "Backend transcription endpoint error, trying direct Gemini API with personal key:",
+            serverErr
+          );
+
+          const activeKey = geminiApiKey.trim();
+          if (!activeKey) {
+            throw new Error(
+              serverErr.message?.includes("API key") || serverErr.message?.includes("quota")
+                ? serverErr.message
+                : "Server error occurred. Please click 'API Key' in the top bar to connect your Gemini API key."
+            );
+          }
+
+          const directSegments = await directTranscribeWithGemini(
+            activeKey,
+            base64Audio,
+            uploadFile.type || "audio/wav",
+            customPrompt
+          );
+          transcriptionData = { segments: directSegments };
         }
-        transcriptionData = { segments: parsedList };
       }
 
       if (transcriptionData?.segments && Array.isArray(transcriptionData.segments)) {
@@ -971,8 +1070,24 @@ ${customPrompt ? `Additional user instructions: ${customPrompt}` : ""}`;
                         <div className="text-[13.5px] font-semibold text-[#F3EFFA] truncate">
                           {audioFile.name}
                         </div>
-                        <div className="text-[11.5px] text-[#6C6280]">
-                          {(audioFile.size / 1024 / 1024).toFixed(1)} MB
+                        <div className="text-[11.5px] text-[#6C6280] flex flex-wrap items-center gap-2 mt-0.5">
+                          <span>{(audioFile.size / 1024 / 1024).toFixed(1)} MB</span>
+                          {audioDuration > 0 && (
+                            <>
+                              <span>•</span>
+                              <span>{Math.round(audioDuration)}s duration</span>
+                              {audioDuration > 30 ? (
+                                <span className="text-[11px] text-[#C084FC] bg-[#8B5CF6]/15 border border-[#8B5CF6]/30 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-[#8B5CF6] animate-pulse" />
+                                  Over 30s • 15s Backend Chunks Pipeline
+                                </span>
+                              ) : (
+                                <span className="text-[11px] text-[#34D399] bg-[#34D399]/10 border border-[#34D399]/20 px-2 py-0.5 rounded-full font-medium">
+                                  Under 30s • Direct Piece
+                                </span>
+                              )}
+                            </>
+                          )}
                         </div>
                       </div>
                       <button

@@ -5,6 +5,227 @@
 
 import { SubtitleSegment } from "./types";
 
+export interface AudioChunk {
+  index: number;
+  totalChunks: number;
+  startSec: number;
+  endSec: number;
+  duration: number;
+  file: File;
+}
+
+export interface PreparedAudioResult {
+  duration: number;
+  exceeds30s: boolean;
+  totalChunks: number;
+  chunks: AudioChunk[];
+  singleFile?: File;
+  isExtracted: boolean;
+}
+
+/**
+ * Requirement: When the file exceeds 30 seconds, always divide the file into 15 seconds chunks,
+ * transcribe each chunk individually in the backend, then rebuild them and present them to the user as the final piece.
+ *
+ * This function decodes the input media and, if duration > 30 seconds, divides it into exact 15-second slices
+ * encoded as mono 16kHz WAV files for individual backend transcription.
+ */
+export async function prepareAudioWith15sChunking(
+  file: File,
+  onProgress?: (status: string) => void
+): Promise<PreparedAudioResult> {
+  onProgress?.("Inspecting audio duration and preparing voice track...");
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+
+    if (!AudioContextClass) {
+      return {
+        duration: 0,
+        exceeds30s: false,
+        totalChunks: 1,
+        chunks: [],
+        singleFile: file,
+        isExtracted: false,
+      };
+    }
+
+    const audioCtx = new AudioContextClass();
+    let audioBuffer: AudioBuffer;
+
+    try {
+      audioBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+    } catch (decodeErr) {
+      console.warn("Browser decodeAudioData failed, passing file to backend chunker:", decodeErr);
+      await audioCtx.close().catch(() => {});
+      return {
+        duration: 0,
+        exceeds30s: false,
+        totalChunks: 1,
+        chunks: [],
+        singleFile: file,
+        isExtracted: false,
+      };
+    }
+
+    const duration = audioBuffer.duration;
+    const numChannels = audioBuffer.numberOfChannels;
+    const targetSampleRate = 16000;
+
+    // Downmix to mono and resample to 16kHz
+    const targetLength = Math.round(duration * targetSampleRate);
+    const monoData = new Float32Array(targetLength);
+
+    const channelData: Float32Array[] = [];
+    for (let c = 0; c < numChannels; c++) {
+      channelData.push(audioBuffer.getChannelData(c));
+    }
+
+    const ratio = audioBuffer.sampleRate / targetSampleRate;
+    for (let i = 0; i < targetLength; i++) {
+      const srcIdx = i * ratio;
+      const srcFloor = Math.floor(srcIdx);
+      const srcCeil = Math.min(channelData[0].length - 1, srcFloor + 1);
+      const frac = srcIdx - srcFloor;
+
+      let sample = 0;
+      for (let c = 0; c < numChannels; c++) {
+        const s0 = channelData[c][srcFloor] || 0;
+        const s1 = channelData[c][srcCeil] || 0;
+        sample += s0 + (s1 - s0) * frac;
+      }
+      sample /= numChannels;
+      monoData[i] = Math.max(-1, Math.min(1, sample));
+    }
+
+    await audioCtx.close().catch(() => {});
+
+    const baseName = file.name.replace(/\.[^/.]+$/, "");
+
+    // When the file exceeds 30 seconds, always divide into 15 seconds chunks
+    if (duration > 30) {
+      const CHUNK_DURATION = 15; // 15 seconds chunks
+      const totalChunks = Math.ceil(duration / CHUNK_DURATION);
+      onProgress?.(
+        `Audio exceeds 30s (${duration.toFixed(1)}s). Dividing into ${totalChunks} chunks of 15 seconds...`
+      );
+
+      const chunks: AudioChunk[] = [];
+
+      for (let i = 0; i < totalChunks; i++) {
+        const startSec = i * CHUNK_DURATION;
+        const endSec = Math.min((i + 1) * CHUNK_DURATION, duration);
+        const chunkDur = endSec - startSec;
+
+        if (chunkDur <= 0.1) continue;
+
+        const startSample = Math.floor(startSec * targetSampleRate);
+        const endSample = Math.min(monoData.length, Math.floor(endSec * targetSampleRate));
+        const chunkSamples = monoData.subarray(startSample, endSample);
+
+        const chunkWavBuffer = encodeWAV(chunkSamples, targetSampleRate);
+        const chunkBlob = new Blob([chunkWavBuffer], { type: "audio/wav" });
+        const chunkFile = new File(
+          [chunkBlob],
+          `${baseName}_chunk${i + 1}_${Math.round(startSec)}-${Math.round(endSec)}s.wav`,
+          { type: "audio/wav" }
+        );
+
+        chunks.push({
+          index: i,
+          totalChunks,
+          startSec,
+          endSec,
+          duration: chunkDur,
+          file: chunkFile,
+        });
+      }
+
+      return {
+        duration,
+        exceeds30s: true,
+        totalChunks: chunks.length,
+        chunks,
+        isExtracted: true,
+      };
+    }
+
+    // Audio is <= 30 seconds: single WAV file
+    const fullWavBuffer = encodeWAV(monoData, targetSampleRate);
+    const fullBlob = new Blob([fullWavBuffer], { type: "audio/wav" });
+    const singleFile = new File([fullBlob], `${baseName}_audio.wav`, { type: "audio/wav" });
+
+    return {
+      duration,
+      exceeds30s: false,
+      totalChunks: 1,
+      chunks: [],
+      singleFile,
+      isExtracted: true,
+    };
+  } catch (err) {
+    console.error("Audio preparation error:", err);
+    return {
+      duration: 0,
+      exceeds30s: false,
+      totalChunks: 1,
+      chunks: [],
+      singleFile: file,
+      isExtracted: false,
+    };
+  }
+}
+
+/**
+ * Rebuilds subtitle segments from individually transcribed 15-second chunks
+ * and presents them as the unified final piece.
+ */
+export function rebuildChunkedSegments(
+  chunkResults: { chunkIndex: number; startSec: number; segments: any[] }[]
+): SubtitleSegment[] {
+  const allSegments: SubtitleSegment[] = [];
+
+  // Sort chunks strictly by index
+  const sortedChunks = [...chunkResults].sort((a, b) => a.chunkIndex - b.chunkIndex);
+
+  for (const chunk of sortedChunks) {
+    if (!Array.isArray(chunk.segments)) continue;
+
+    for (const rawSeg of chunk.segments) {
+      const segText = (rawSeg.text || "").trim();
+      if (!segText) continue;
+
+      let segStart = parseFloat(rawSeg.start) || 0;
+      let segEnd = parseFloat(rawSeg.end) || segStart + 1.2;
+
+      // Ensure segment start and end are anchored relative to the complete audio
+      // If the segment timestamp is already global (>= chunk.startSec), retain it;
+      // otherwise, add chunk.startSec
+      if (segStart < chunk.startSec) {
+        segStart = parseFloat((segStart + chunk.startSec).toFixed(2));
+        segEnd = parseFloat((segEnd + chunk.startSec).toFixed(2));
+      }
+
+      allSegments.push({
+        id: `seg_${Date.now()}_c${chunk.chunkIndex}_${allSegments.length}`,
+        start: segStart,
+        end: segEnd,
+        text: segText,
+        translation: rawSeg.translation || "",
+      });
+    }
+  }
+
+  // Refine and align across chunk boundaries
+  return verifyAndRefineTimings(allSegments, {
+    bridgeMicroGaps: true,
+    maxBridgeSeconds: 0.30,
+  });
+}
+
 /**
  * Extracts and downsamples audio from video or large audio files directly in the browser.
  * Converts to mono 16kHz (or adaptive sample rate) WAV format so the payload is < 3.5MB,
